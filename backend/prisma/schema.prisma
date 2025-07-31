@@ -1,0 +1,1442 @@
+generator client {
+  provider = "prisma-client-py"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Bay {
+  id      String @id @default(uuid())
+  name    String
+  inUse   Boolean @default(false)
+  currentAppointmentId String?
+}
+
+model Bill {
+  id         String   @id @default(uuid())
+  vendorId   String
+  vendor     Vendor   @relation(fields: [vendorId], references: [id])
+  amount     Float
+  category   String   // rent, utilities, marketing, etc.
+  paid       Boolean  @default(false)
+  invoiceNo  String?
+  postedAt   DateTime @default(now())
+  dueDate    DateTime?
+  notes      String?
+  recurring  RecurringBill?
+  taxCategory String? // "SUPPLIES", "UTILITIES", etc.
+
+  recurringId String?
+}
+
+model RecurringBill {
+  id         String   @id @default(uuid())
+  vendorId   String
+  vendor     Vendor   @relation(fields: [vendorId], references: [id])
+  amount     Float
+  category   String
+  frequency  String   // "MONTHLY", "WEEKLY"
+  nextRun    DateTime
+  description String?
+}
+
+model RecurringExpense {
+  id         String   @id @default(uuid())
+  category   String
+  amount     Float
+  vendor     String
+  nextDue    DateTime
+  frequency  String   // e.g., "MONTHLY", "QUARTERLY"
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+}
+
+model Log {
+  id        String   @id @default(uuid())
+  action    String
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  timestamp DateTime @default(now())
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  TECHNICIAN
+  ACCOUNTANT
+  FRONT_DESK
+}
+
+model Job {
+  id           String        @id @default(uuid())
+  title        String
+  description  String
+  status        String   @default("SCHEDULED") // e.g., SCHEDULED, SKIPPED, CANCELLED
+  technician   User?         @relation(fields: [technicianId], references: [id])
+  technicianId String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  billedHours  Float         @default(0)
+  actualHours  Float         @default(0)
+  BayIds       String
+  RepairOrder  RepairOrder[]
+  PartUsage    PartUsage[]
+  JobTimeLog   JobTimeLog[]
+  isRecurring  Boolean  @default(false)
+  recurrence   String?  // e.g. 'MONTHLY', 'WEEKLY'
+  acknowledged Boolean @default(false)
+  acknowledgedAt DateTime?
+}
+
+enum JobStatus {
+  QUEUED
+  IN_PROGRESS
+  COMPLETED
+  ON_HOLD
+}
+
+model JobItem {
+  technicianId String
+  hoursBilled  Float
+  laborCost    Float? // auto-calculated
+  technicianId String
+  hoursBilled  Float
+  revenue      Float
+  commission   Float? // technician cut
+  customerRating Int?  // 1 to 5
+  ratingNote     String?
+  status String @default("SCHEDULED") // Enum: "SCHEDULED", "IN_PROGRESS", "COMPLETE"
+  startedAt DateTime?
+  finishedAt DateTime?
+  internalNotes String?
+  warrantyMonths Int?   // duration
+  warrantyMiles  Int?   // limit
+  warrantyStart  DateTime?
+}
+
+model JobAttachment {
+  id       String   @id @default(uuid())
+  jobItemId String
+  fileUrl  String
+  uploadedAt DateTime @default(now())
+}
+
+
+model Vehicle {
+  id          String        @id @default(uuid())
+  vin         String        @unique
+  make        String
+  model       String
+  year        Int
+  owner       User          @relation(fields: [ownerId], references: [id])
+  ownerId     String
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id])
+  isArchived  Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  RepairOrder RepairOrder[]
+  Estimate    Estimate[]
+  Appointment Appointment[]
+  isArchived Boolean @default(false)
+  lastServiceDate DateTime?
+  lastServiceMileage Int?
+  mileageReminderThreshold Int? // e.g. 5000
+  timeReminderMonths Int?      // e.g. 6
+  mileage        Int
+  lastReminderAt DateTime?
+}
+
+model RepairOrder {
+  id               String             @id @default(uuid())
+  vehicle          Vehicle            @relation(fields: [vehicleId], references: [id])
+  vehicleId        String
+  customer         User               @relation(fields: [customerId], references: [id])
+  customerId       String
+  job              Job?               @relation(fields: [jobId], references: [id])
+  jobId            String?
+  status           OrderStatus        @default(DRAFT)
+  notes            String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  WarrantyClaim    WarrantyClaim[]
+  JobCard          JobCard[]
+  Invoice          Invoice[]
+  RepairAttachment RepairAttachment[]
+  RepairNote       RepairNote[]
+}
+
+enum OrderStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model WarrantyClaim {
+  id            String      @id @default(uuid())
+  customer      User        @relation(fields: [customerId], references: [id])
+  customerId    String
+  workOrderId  String
+  issue        String
+  repairOrder   RepairOrder @relation(fields: [repairOrderId], references: [id])
+  repairOrderId String
+  status        ClaimStatus @default(PENDING)
+  reason        String
+  response      String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  submittedAt  DateTime @default(now())
+  resolvedAt   DateTime?
+  notes        String?
+  workOrder    Invoice  @relation(fields: [workOrderId], references: [id])
+  attachments String[] // Array of file paths
+}
+
+enum ClaimStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  NEEDS_MORE_INFO
+}
+
+model ServicePackage {
+  id          String   @id @default(uuid())
+  name        String
+  description String
+  price       Float
+  items       PackageItem[]
+}
+
+model PackageItem {
+  id          String   @id @default(uuid())
+  packageId   String
+  partId      String?
+  laborHours  Float?
+}
+
+
+model Estimate {
+  id         String         @id @default(uuid())
+  customer   User           @relation(fields: [customerId], references: [id])
+  customerId String
+  vehicle    Vehicle        @relation(fields: [vehicleId], references: [id])
+  vehicleId  String
+  status     EstimateStatus @default(DRAFT)
+  total      Float          @default(0)
+  items      EstimateItem[]
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  JobCard    JobCard[]
+  jobGroup String? // e.g., "Brakes", "Engine Diagnostics"
+  createdById    String
+  approvedById   String?
+  approvedAt     DateTime?
+  expiresAt DateTime?
+  servicePackageId String?
+    category String? // e.g. "BRAKES", "OIL_CHANGE"
+  followUpSent Boolean @default(false)
+}
+
+model EstimateItem {
+  id          String   @id @default(uuid())
+  estimate    Estimate @relation(fields: [estimateId], references: [id])
+  estimateId  String
+  description String
+  cost        Float
+  actualCost Float? // from inventory parts used
+  hoursBilled Float?
+  technicianId String?
+  technician User? @relation(fields: [technicianId], references: [id])
+  groupId String?  // link items by group
+  status  String   @default("PENDING") // PENDING, APPROVED, REJECTED
+}
+
+enum EstimateStatus {
+  DRAFT
+  PENDING_CUSTOMER_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+model JobTimer {
+  id         String   @id @default(uuid())
+  technicianId String
+  appointmentId String
+  startedAt  DateTime
+  endedAt    DateTime?
+}
+
+
+model JobCard {
+  id            String        @id @default(uuid())
+  label         String
+  estimate      Estimate?     @relation(fields: [estimateId], references: [id])
+  estimateId    String?
+  repairOrder   RepairOrder?  @relation(fields: [repairOrderId], references: [id])
+  repairOrderId String?
+  items         JobCardItem[]
+}
+
+model JobCardItem {
+  id          String  @id @default(uuid())
+  jobCard     JobCard @relation(fields: [jobCardId], references: [id])
+  jobCardId   String
+  description String
+  laborHours  Float
+  partsCost   Float
+}
+
+model Invoice {
+  id            String        @id @default(uuid())
+  repairOrder   RepairOrder   @relation(fields: [repairOrderId], references: [id])
+  repairOrderId String
+  customer      User          @relation(fields: [customerId], references: [id])
+  customerId    String
+  total         Float
+  status        InvoiceStatus @default(UNPAID)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  InvoiceItem   InvoiceItem[]
+  Payment       Payment[]
+  estimateId String
+  estimate   Estimate @relation(fields: [estimateId], references: [id])
+  dueDate DateTime?
+  taxCategory String? // "SALES_TAX", "SERVICE_TAX"
+  taxAmount     Float   @default(0)
+  taxRate       Float   @default(0)
+  sourceEstimateId String?
+}
+
+
+model InvoiceItem {
+  id        String    @id @default(uuid())
+  invoice   Invoice   @relation(fields: [invoiceId], references: [id])
+  invoiceId String
+  label     String
+  amount    Float
+  dueDate   DateTime?
+  lateFee   Float     @default(0)
+  graceDays Int       @default(0)
+  isWarranty  Boolean  @default(false)
+}
+
+enum InvoiceStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+}
+
+model Payment {
+  id        String   @id @default(uuid())
+  invoiceId String
+  amount    Float
+  method    String
+  createdAt DateTime @default(now())
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id])
+}
+
+
+model Part {
+  id             String           @id @default(uuid())
+  name           String
+  sku            String           @unique
+  cost           Float
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  price          Float
+  quantity       Int
+  reorderMin     Int?             @default(0)
+  reorderMax     Int              @default(0)
+  reorderCount Int @default(0)
+  vendor         String
+  POItem         POItem[]
+  PartUsage      PartUsage[]
+  description    String
+  location       String? // e.g., "Main Warehouse", "Truck #1", "Bin B2"
+  StockTransfer  StockTransfer[]
+  InventoryEvent InventoryEvent[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  minQty    Int      @default(0)
+  maxQty Int @default(0)
+  alert     Boolean  @default(false)
+  locationId String?
+  location   PartLocation? @relation(fields: [locationId], references: [id])
+  expiryDate DateTime?
+  isAvailable Boolean @default(true)
+  notifyOnReorder Boolean @default(false)
+  leadTimeDays Int @default(0)
+  vendorId      String?
+  lastUsedAt DateTime?
+  alertThreshold Int     @default(0)
+  alertSent      Boolean @default(false)
+}
+
+model Review {
+  id          String   @id @default(uuid())
+  customerId  String
+  appointmentId String
+  rating      Int      // 1–5 stars
+  comments    String?
+  createdAt   DateTime @default(now())
+}
+
+model CustomerToken {
+  id        String   @id @default(uuid())
+  email     String
+  token     String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model PartTransfer {
+  id         String   @id @default(uuid())
+  partId     String
+  fromId     String
+  toId       String
+  qty        Int
+  byUserId   String
+  createdAt  DateTime @default(now())
+
+  part       Part
+  from       PartLocation @relation("FromLocation", fields: [fromId], references: [id])
+  to         PartLocation @relation("ToLocation", fields: [toId], references: [id])
+}
+
+model PartLocation {
+  id     String  @id @default(uuid())
+  name   String  @unique
+  parts  Part[]
+}
+
+model PurchaseOrder {
+  id               String             @id @default(uuid())
+  vendor           String
+  sku              String
+  items            POItem[]
+  status           String             @default("DRAFT") // DRAFT | APPROVED | ORDERED
+  approvedBy       String?
+  createdAt        DateTime           @default(now())
+  PurchaseItem     PurchaseItem[]
+  VendorBill       VendorBill[]
+  PurchaseOrderLog PurchaseOrderLog[]
+  quantity   Int
+  status     String   // e.g. PENDING, APPROVED, ORDERED, REJECTED
+  reason     String?
+  createdAt  DateTime @default(now())
+  approvedBy String?
+  rejectionReason String?
+  expectedArrival DateTime?
+}
+
+model PurchaseOrderItem {
+  id     String @id @default(uuid())
+  poId   String
+  partId String
+  qty    Int
+
+  part   Part          @relation(fields: [partId], references: [id])
+  po     PurchaseOrder @relation(fields: [poId], references: [id])
+  expectedCost Float @default(0)
+  receivedQty Int     @default(0)
+  receivedAt  DateTime?
+  receivedSignatureUrl String?
+  invoiceScanUrl String?
+  isDamaged    Boolean @default(false)
+  isMismatched Boolean @default(false)
+  deliveredAt DateTime?
+  wasLate     Boolean  @default(false)
+  notes        String?
+  invoiceOverageFlag Boolean @default(false)
+  flaggedAt   DateTime?
+  resolvedAt  DateTime?
+}
+
+model POItem {
+  id       String        @id @default(uuid())
+  part     Part          @relation(fields: [partId], references: [id])
+  partId   String
+  order    PurchaseOrder @relation(fields: [orderId], references: [id])
+  orderId  String
+  quantity Int
+  cost     Float
+  purchaseOrderId String
+  sku            String
+  description    String
+}
+
+enum POStatus {
+  DRAFT
+  SENT
+  RECEIVED
+}
+
+model RecurringBill {
+  id           String   @id @default(uuid())
+  vendor       String
+  category     String
+  amount       Float
+  nextDue      DateTime
+  intervalDays Int
+  active       Boolean @default(true)
+}
+
+model Expense {
+  id         String          @id @default(uuid())
+  vendor     String
+  category   String
+  amount     Float
+  date       DateTime        @default(now())
+  recurring  Boolean         @default(false)
+  recurrence RecurrenceType?
+  poItemId  String?
+  invoiceFileUrl String?
+  uploadedById String?
+  uploadedBy   User?    @relation(fields: [uploadedById], references: [id])
+  createdAt DateTime @default(now())
+}
+
+enum RecurrenceType {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+model Appointment {
+  id               String            @id @default(uuid())
+  title            String
+  customer         User              @relation(fields: [customerId], references: [id])
+  customerId       String
+  vehicle          Vehicle?          @relation(fields: [vehicleId], references: [id])
+  vehicleId        String?
+  technicianId     String?
+  reason     String
+  startTime        DateTime
+  endTime          DateTime
+  status           AppointmentStatus @default(SCHEDULED)
+  externalEventId  String? // Calendar sync ID
+  calendarProvider String? // 'GOOGLE' | 'OUTLOOK'
+  technician User?    @relation(fields: [technicianId], references: [id])
+  type        String   // ESTIMATE, REPAIR, TEST_DRIVE
+  scheduledAt DateTime
+  duration    Int      // in minutes
+  notes       String?
+  createdAt   DateTime @default(now())
+  technicianId String?
+  bay          String?
+  bayId        String?
+  serviceTruck String?
+  reminderSentAt DateTime?
+  checklist Json?        // service steps completion
+  shopId   String?
+  latitude   Float?
+  longitude  Float?
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+model Bay {
+  id        String @id @default(uuid())
+  label     String
+  isActive  Boolean @default(true)
+}
+
+
+model AppointmentPhoto {
+  id            String   @id @default(uuid())
+  appointmentId String
+  url           String
+  uploadedAt    DateTime @default(now())
+}
+
+model JobClock {
+  id          String   @id @default(uuid())
+  appointmentId String
+  technicianId String
+  clockIn     DateTime
+  clockOut    DateTime?
+}
+
+model Bay {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  isOccupied Boolean @default(false)
+  updatedAt DateTime @updatedAt
+}
+
+
+model PartUsage {
+  id       String @id @default(uuid())
+  job      Job    @relation(fields: [jobId], references: [id])
+  jobId    String
+  part     Part   @relation(fields: [partId], references: [id])
+  partId   String
+  quantity Int
+  cost     Float // captured at time of use
+}
+
+model RepairAttachment {
+  id            String      @id @default(uuid())
+  repairOrder   RepairOrder @relation(fields: [repairOrderId], references: [id])
+  repairOrderId String
+  filename      String
+  url           String
+  uploadedAt    DateTime    @default(now())
+}
+
+model RepairNote {
+  id            String      @id @default(uuid())
+  repairOrder   RepairOrder @relation(fields: [repairOrderId], references: [id])
+  repairOrderId String
+  author        User        @relation(fields: [authorId], references: [id])
+  authorId      String
+  message       String
+  timestamp     DateTime    @default(now())
+}
+
+model JobCardTemplate {
+  id    String                @id @default(uuid())
+  label String
+  items JobCardTemplateItem[]
+}
+
+model JobCardTemplateItem {
+  id          String          @id @default(uuid())
+  template    JobCardTemplate @relation(fields: [templateId], references: [id])
+  templateId  String
+  description String
+  laborHours  Float
+  partsCost   Float
+}
+
+model JobTimeLog {
+  id        String    @id @default(uuid())
+  job       Job       @relation(fields: [jobId], references: [id])
+  jobId     String
+  tech      User      @relation(fields: [techId], references: [id])
+  techId    String
+  startedAt DateTime
+  endedAt   DateTime?
+}
+
+model RolePermission {
+  id       String @id @default(uuid())
+  role     String
+  resource String
+  action   String
+}
+
+model JobTemplate {
+  id       String   @id @default(uuid())
+  name     String
+  laborOps Json
+  parts    Json
+  checklist Json
+  labor   Json
+  createdById String
+}
+
+model PurchaseItem {
+  id       String        @id @default(uuid())
+  po       PurchaseOrder @relation(fields: [poId], references: [id])
+  poId     String
+  partId   String
+  quantity Int
+  cost     Float
+  partRequestId String? 
+  sku      String
+  received Int      @default(0)
+
+  part   Part          @relation(fields: [partId], references: [id])
+  po     PurchaseOrder @relation(fields: [poId], references: [id])
+}
+
+model Shop {
+  id       String   @id @default(uuid())
+  name     String
+  address  String
+  phone    String
+  timezone String
+}
+
+model StockTransfer {
+  id           String   @id @default(uuid())
+  part         Part     @relation(fields: [partId], references: [id])
+  partId       String
+  fromLocation String
+  toLocation   String
+  quantity     Int
+  transferDate DateTime @default(now())
+  note         String?
+}
+
+model VendorBill {
+  id       String        @id @default(uuid())
+  po       PurchaseOrder @relation(fields: [poId], references: [id])
+  poId     String
+  vendor    String
+  amount   Float
+  billDate DateTime
+  dueDate  DateTime
+  paid     Boolean       @default(false)
+  note     String?
+  isRecurring Boolean  @default(false)
+  isPaid    Boolean @default(false)
+  paidDate  DateTime?
+  recurrence  String?  // e.g. "MONTHLY", "YEARLY"
+  category String? // e.g., "RENT", "TOOLS", "UTILITIES"
+  docPath String?
+  jobItemId String?   // Optional link to job
+  uploadedAt DateTime @default(now())
+  uploadedById String
+  uploadedBy   User    @relation(fields: [uploadedById], references: [id])
+}
+
+model PurchaseOrderLog {
+  id        String        @id @default(uuid())
+  po        PurchaseOrder @relation(fields: [poId], references: [id])
+  poId      String
+  status    String
+  changedBy String
+  timestamp DateTime      @default(now())
+  note      String?
+}
+
+model InventoryEvent {
+  id        String   @id @default(uuid())
+  part      Part     @relation(fields: [partId], references: [id])
+  partId    String
+  quantity  Int
+  location  String
+  type      String // "RECEIVE", "TRANSFER", etc.
+  userId    String
+  timestamp DateTime @default(now())
+  note      String?
+}
+
+model PartRequest {
+  id        String   @id @default(uuid())
+  sku       String
+  quantity  Int
+  location  String?
+  reason    String?
+  userId    String
+  createdAt DateTime @default(now())
+  status    String   @default("PENDING") // PENDING | APPROVED | DENIED
+  filledAt  DateTime?
+  techNote   String? // Technician acknowledgment/comments
+  acknowledgedAt DateTime?
+}
+
+model PartRequestTemplate {
+  id        String   @id @default(uuid())
+  name      String
+  createdBy String
+  createdAt DateTime @default(now())
+  items     TemplateItem[]
+  usageCount Int @default(0)
+}
+
+model TemplateItem {
+  id         String @id @default(uuid())
+  template   PartRequestTemplate @relation(fields: [templateId], references: [id])
+  templateId String
+  sku        String
+  quantity   Int
+  jobType    String?
+  vehicleTag String?
+  bundleType String? // "REQUIRED", "OPTIONAL"
+  bundleWith String? // SKU that this is linked to
+}
+
+model JobPart {
+  id         String  @id @default(uuid())
+  jobId      String
+  sku        String
+  quantity   Int
+  used       Boolean @default(false)
+  techNote String?
+  substituted     Boolean @default(false)
+  originalSku     String? // Original intended SKU
+  assignedAt DateTime?
+  usedAt     DateTime?
+  job    Job    @relation(fields: [jobId], references: [id])
+  part   Part   @relation(fields: [partId], references: [id])
+}
+
+model InvoicePart {
+  id         String @id @default(uuid())
+  invoiceId  String
+  sku        String
+  quantity   Int
+  unitPrice  Float
+  cost       Float
+}
+
+model UserReview {
+  id         String   @id @default(uuid())
+  techId     String
+  reviewerId String
+  note       String
+  createdAt  DateTime @default(now())
+}
+
+model InventoryLog {
+  id        String   @id @default(uuid())
+  sku       String
+  quantity  Int
+  createdAt DateTime @default(now())
+  reason    String?  // e.g. "restock", "usage", "correction"
+  unitCost  Float?
+}
+
+model JobAuditLog {
+  id        String   @id @default(uuid())
+  jobId     String
+  action    String   // SKIPPED or CANCELLED
+  reason    String?
+  byUserId  String
+  createdAt DateTime @default(now())
+}
+
+
+
+model POAuditLog {
+  id       String   @id @default(uuid())
+  poId     String
+  status   String
+  reason   String?
+  byUserId String
+  createdAt DateTime @default(now())
+}
+
+model CalendarToken {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  provider    String   // "GOOGLE" or "OUTLOOK"
+  accessToken String
+  refreshToken String
+  expiresAt   DateTime
+}
+
+
+
+model ChartAccount {
+  id        String   @id @default(uuid())
+  name      String
+  type      String   // e.g., "Asset", "Liability", "Expense"
+  code      String   @unique
+  isSystem  Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model CycleCount {
+  id        String   @id @default(uuid())
+  partId    String
+  countedBy String
+  countedQty Int
+  systemQty  Int
+  variance   Int
+  locationId String?
+  createdAt DateTime @default(now())
+
+  part     Part
+  location PartLocation? @relation(fields: [locationId], references: [id])
+
+  photoUrl String?
+
+  approved    Boolean   @default(false)
+  approvedBy  String?
+  approvedAt  DateTime?
+
+  comment     String?
+  approvalNote String?
+}
+
+model InventoryLog {
+  id        String   @id @default(uuid())
+  userId    String
+  partId    String
+  action    String
+  quantity  Int
+  reason    String?
+  photoUrl String?
+  createdAt DateTime @default(now())
+}
+
+model Customer {
+  id        String   @id @default(uuid())
+  fullName  String
+  email     String   @unique
+  phone     String
+  smsOptIn       Boolean  @default(false)
+  street    String?
+  city      String?
+  state     String?
+  zip       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  preferredTechnicianId String?
+  loyaltyPoints Int @default(0)
+  visits        Int @default(0)
+  vehicles  Vehicle[]
+  messages  CustomerMessage[]
+  referralCode     String @unique
+  referredByCode   String?
+}
+
+model CustomerMessage {
+  id         String   @id @default(uuid())
+  customerId String
+  type       String   // e.g., "SMS", "EMAIL", "NOTE"
+  content    String
+  sentAt     DateTime @default(now())
+  customer   Customer @relation(fields: [customerId], references: [id])
+}
+
+model SmsLog {
+  id        String   @id @default(uuid())
+  customerId String
+  message   String
+  sentAt    DateTime @default(now())
+  status    String   // SENT, FAILED
+}
+
+model ServiceRecord {
+  id         String   @id @default(uuid())
+  vehicleId  String
+  date       DateTime
+  summary    String
+  notes      String?
+  createdAt  DateTime @default(now())
+  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id])
+}
+
+model Estimate {
+  id         String   @id @default(uuid())
+  vehicleId  String
+  status     String   @default("DRAFT")
+  total      Float    @default(0)
+  createdAt  DateTime @default(now())
+  items      EstimateItem[]
+  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id])
+}
+
+model EstimateItem {
+  id          String   @id @default(uuid())
+  estimateId  String
+  description String
+  cost        Float
+  approved    Boolean  @default(false)
+  estimate    Estimate @relation(fields: [estimateId], references: [id])
+}
+
+model MaintenanceContract {
+  id          String   @id @default(uuid())
+  vehicleId   String
+  startDate   DateTime
+  endDate     DateTime
+  details     String
+  provider    String
+  isActive    Boolean  @default(true)
+  recurrenceMonths Int?   // Optional recurrence schedule
+  nextServiceDue   DateTime?
+  autoRenew Boolean @default(false)
+
+  vehicle     Vehicle  @relation(fields: [vehicleId], references: [id])
+}
+
+
+model User {
+  id            String          @id @default(uuid())
+  email         String          @unique
+  hashedPwd     String
+  failedLogins  Int      @default(0)
+  lockedUntil   DateTime?
+  role          Role            @default(FRONT_DESK)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  logs          Log[]
+  createdById   String? // Nullable for self-registered
+  createdBy     User?           @relation("CreatedUsers", fields: [createdById], references: [id])
+  created       User[]          @relation("CreatedUsers")
+  Job           Job[]
+  Vehicle       Vehicle[]
+  RepairOrder   RepairOrder[]
+  WarrantyClaim WarrantyClaim[]
+  Estimate      Estimate[]
+  Invoice       Invoice[]
+  Appointment   Appointment[]
+  RepairNote    RepairNote[]
+  JobTimeLog    JobTimeLog[]
+  assignedBay String?
+  knownIps String[] @default([])
+  resetToken     String?
+  resetExpiresAt DateTime?
+  PublicCalendarToken String? @unique
+  twoFactorEnabled Boolean   @default(false)
+  twoFactorSecret  String?
+  wantsSmsReminders Boolean @default(true)
+  wantsEmailReminders Boolean @default(true)
+  googleRefreshToken String?
+  googleEmail        String?
+  role        String
+  hourlyRate  Float? // Only required for TECHNICIAN
+  isCommissioned Boolean  @default(false)
+  commissionRate  Float? // e.g. 0.10 for 10%
+  shopId   String?
+}
+
+model Vendor {
+  id       String @id @default(uuid())
+  name     String @unique
+  rating   Float  @default(100.0)
+  name      String
+  email     String?
+  phone     String?
+  bills     VendorBill[]
+}
+
+model VendorInvoice {
+  id        String   @id @default(uuid())
+  vendor    String
+  amount    Float
+  parts     String?  // optional JSON or text note
+  poId      String?
+  receivedAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model VendorInvoiceItem {
+  id         String   @id @default(uuid())
+  invoiceId  String
+  partId     String
+  qty        Int
+  costPerUnit Float
+
+  invoice    VendorInvoice @relation(fields: [invoiceId], references: [id])
+  part       Part          @relation(fields: [partId], references: [id])
+}
+
+model VendorRatingHistory {
+  id        String   @id @default(uuid())
+  vendorId  String
+  vendor    Vendor   @relation(fields: [vendorId], references: [id])
+  rating    Float
+  timestamp DateTime @default(now())
+}
+
+model Vehicle {
+  id          String   @id @default(uuid())
+  vin         String   @unique
+  make        String
+  model       String
+  engine      String
+  drive       String
+  trim        String
+  year        Int
+  mileage     Int
+  lastUpdated DateTime
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id])
+  archived    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  restrictedTechnicianId String?
+}
+
+model JobComment {
+  id        String   @id @default(uuid())
+  jobItemId String
+  userId    String
+  content   String
+  createdAt DateTime @default(now())
+}
+
+model JobTimeLog {
+  id        String   @id @default(uuid())
+  jobItemId String
+  technicianId String
+  startTime DateTime
+  endTime   DateTime?
+}
+
+model WarrantyAudit {
+  id        String   @id @default(uuid())
+  claimId   String
+  action    String   // "COMMENT", "STATUS_CHANGE", etc.
+  actorId   String
+  timestamp DateTime @default(now())
+  detail    String?
+
+  claim     WarrantyClaim @relation(fields: [claimId], references: [id])
+}
+
+model WarrantyClaim {
+  id          String   @id @default(uuid())
+  customerId  String
+  workOrderId String
+  description String
+  status      String   @default("OPEN") // "APPROVED", "DENIED", "CLOSED"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  firstResponseAt DateTime?
+
+  customer    Customer @relation(fields: [customerId], references: [id])
+  workOrder   Invoice  @relation(fields: [workOrderId], references: [id])
+  attachmentUrl String?  // S3 or local file path
+  invoiceItemIds String[] // Array of covered invoice item IDs
+  assignedToId String?   // References User.id
+  assignedTo   User?     @relation(fields: [assignedToId], references: [id])
+
+  resolutionNotes String?
+}
+
+model WarrantyClaimComment {
+  id        String   @id @default(uuid())
+  claimId   String
+  sender    String   // "CUSTOMER" or "STAFF"
+  message   String
+  createdAt DateTime @default(now())
+
+  claim     WarrantyClaim @relation(fields: [claimId], references: [id])
+}
+
+model ServiceZone {
+  id    String @id @default(uuid())
+  name  String
+  postalCodes String[] // List of zip/postal codes
+}
+model User {
+  ...
+  zoneId String?
+  zone   ServiceZone? @relation(fields: [zoneId], references: [id])
+}
+
+model Account {
+  id      String  @id @default(uuid())
+  name    String
+  type    String  // "REVENUE", "EXPENSE", "ASSET", "LIABILITY"
+  code    String
+}
+
+model JournalEntry {
+  id         String   @id @default(uuid())
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id])
+  amount     Float
+  debit      Boolean
+  memo       String?
+  date       DateTime
+  description String
+  lines      JournalLine[]
+  isApproved  Boolean       @default(false)
+  isLocked    Boolean       @default(false)
+  approvedBy  String?
+  createdAt  DateTime      @default(now())
+  postedAt   DateTime @default(now())
+}
+
+model JournalLine {
+  id          String   @id @default(uuid())
+  entryId     String
+  account     String   // e.g. "Cash", "COGS", "Inventory"
+  debit       Float    @default(0)
+  credit      Float    @default(0)
+}
+
+model BankTransaction {
+  id        String   @id @default(uuid())
+  date      DateTime
+  amount    Float
+  type      String   // "DEPOSIT", "WITHDRAWAL"
+  memo      String?
+  matchedTo String?  // invoiceId, billId, etc.
+  matchedInvoiceId String?
+  matchedInvoice   Invoice? @relation(fields: [matchedInvoiceId], references: [id])
+  matchedBillId    String?
+  matchedBill      Bill?    @relation(fields: [matchedBillId], references: [id])
+  reconciled       Boolean  @default(false)
+}
+
+model ServiceChecklist {
+  id        String   @id @default(uuid())
+  jobType   String   // e.g. "Oil Change"
+  label     String   // "Inspect filter", "Drain oil"
+  required  Boolean  @default(true)
+}
+
+model ServiceTruck {
+  id        String   @id @default(uuid())
+  name      String
+  gpsLat    Float?
+  gpsLon    Float?
+  lastUpdate DateTime?
+}
+
+model JobChecklistItem {
+  id             String   @id @default(uuid())
+  jobItemId      String
+  checklistId    String
+  completed      Boolean  @default(false)
+  notes          String?
+}
+
+model MobileTruck {
+  id         String   @id @default(uuid())
+  name       String
+  technicianId String
+  lat        Float?
+  lng        Float?
+  available  Boolean  @default(true)
+}
+
+model TimeOffRequest {
+  id         String   @id @default(uuid())
+  userId     String
+  startDate  DateTime
+  endDate    DateTime
+  reason     String?
+  approved   Boolean? // null = pending
+  createdAt  DateTime @default(now())
+}
+
+model MaintenanceContract {
+  id           String   @id @default(uuid())
+  vehicleId    String
+  planName     String
+  startDate    DateTime
+  endDate      DateTime
+  mileageLimit Int?
+  terms        String?
+  createdAt    DateTime @default(now())
+}
+
+model MaintenanceSchedule {
+  id          String   @id @default(uuid())
+  vehicleId   String
+  dueMileage  Int?
+  dueDate     DateTime?
+  serviceType String
+  notes       String?
+  isCompleted Boolean  @default(false)
+}
+
+model TruckGPS {
+  id         String   @id @default(uuid())
+  truckId    String
+  lat        Float
+  lon        Float
+  timestamp  DateTime @default(now())
+}
+
+model WarrantyClaim {
+  id         String   @id @default(uuid())
+  invoiceId  String
+  customerId String
+  issue      String
+  status     String   @default("PENDING") // APPROVED, DENIED, RESOLVED
+  createdAt  DateTime @default(now())
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  senderId  String
+  receiverId String
+  message   String
+  sentAt    DateTime @default(now())
+  isRead    Boolean  @default(false)
+}
+
+model InternalNote {
+  id           String   @id @default(uuid())
+  appointmentId String?
+  vehicleId    String?
+  authorId     String
+  content      String
+  createdAt    DateTime @default(now())
+}
+
+model VehicleDocument {
+  id         String   @id @default(uuid())
+  vehicleId  String
+  uploadedBy String
+  filename   String
+  url        String
+  roleView   String   // TECHNICIAN, MANAGER, ADMIN
+  createdAt  DateTime @default(now())
+}
+
+model PartReturn {
+  id        String   @id @default(uuid())
+  partId    String
+  reason    String
+  rmaNumber String?
+  status    String   @default("PENDING") // PENDING, SENT, CLOSED
+  createdAt DateTime @default(now())
+}
+
+model InspectionTemplate {
+  id       String   @id @default(uuid())
+  name     String
+  sections InspectionSection[]
+}
+
+model InspectionSection {
+  id         String   @id @default(uuid())
+  label      String
+  templateId String
+  items      InspectionItem[]
+}
+
+model InspectionItem {
+  id          String   @id @default(uuid())
+  description String
+  sectionId   String
+}
+
+model VehicleInspection {
+  id          String   @id @default(uuid())
+  vehicleId   String
+  technicianId String
+  templateId  String
+  responses   InspectionResponse[]
+  createdAt   DateTime @default(now())
+}
+
+model InspectionResponse {
+  id         String   @id @default(uuid())
+  itemId     String
+  inspectionId String
+  status     String   // GOOD, ATTENTION, REPLACE
+  notes      String?
+}
+
+model CalendarCredential {
+  id        String   @id @default(uuid())
+  userId    String
+  provider  String   // GOOGLE / OUTLOOK
+  token     String
+  refresh   String
+  expiresAt DateTime
+}
+
+model NotificationBanner {
+  id        String   @id @default(uuid())
+  message   String
+  level     String   // INFO, WARNING, CRITICAL
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  expiresAt DateTime?
+}
+
+model TimeClock {
+  id          String   @id @default(uuid())
+  technicianId String
+  clockIn     DateTime
+  clockOut    DateTime?
+}
+
+model MaintenanceContract {
+  id         String   @id @default(uuid())
+  label      String
+  price      Float
+  durationMonths Int
+  maxVisits  Int
+  terms      String
+}
+
+model VehicleContract {
+  id           String   @id @default(uuid())
+  contractId   String
+  vehicleId    String
+  startDate    DateTime
+  endDate      DateTime
+  visitsUsed   Int      @default(0)
+}
+
+model WarrantyClaim {
+  id           String   @id @default(uuid())
+  workOrderId  String
+  vehicleId    String
+  issue        String
+  submittedBy  String
+  status       String   @default("OPEN") // OPEN, APPROVED, REJECTED
+  createdAt    DateTime @default(now())
+}
+
+model Review {
+  id         String   @id @default(uuid())
+  customerId String
+  appointmentId String
+  rating     Int
+  feedback   String?
+  createdAt  DateTime @default(now())
+}
+
+model Coupon {
+  id        String   @id @default(uuid())
+  code      String   @unique
+  amount    Float
+  isPercent Boolean  @default(false)
+  expiresAt DateTime
+  isUsed    Boolean  @default(false)
+  customerId String?
+  createdAt DateTime @default(now())
+}
+
+model SurveyResponse {
+  id             String   @id @default(uuid())
+  customerId     String
+  appointmentId  String
+  question1      String
+  question2      String
+  submittedAt    DateTime @default(now())
+}
+
+model InspectionTemplate {
+  id       String   @id @default(uuid())
+  name     String
+  category String
+  items    ChecklistItem[]
+}
+
+model ChecklistItem {
+  id             String   @id @default(uuid())
+  label          String
+  templateId     String
+  defaultStatus  String   @default("NOT_CHECKED")
+}
+
+model InspectionResult {
+  id            String   @id @default(uuid())
+  appointmentId String
+  technicianId  String
+  items         Json
+  signature     String? // base64 image or signed-by field
+  createdAt     DateTime @default(now())
+}
+
+model JobType {
+  id         String   @id @default(uuid())
+  name       String
+  baseHours  Float
+  basePrice  Float
+  isActive   Boolean  @default(true)
+}
+
+model TechnicianAvailability {
+  id         String   @id @default(uuid())
+  technicianId String
+  date       DateTime
+  isAvailable Boolean
+  reason     String?
+}

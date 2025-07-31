@@ -1,0 +1,16 @@
+<!-- templates/invoice.html -->
+<html>
+  <head><title>Invoice</title></head>
+  <body>
+    <h2>{{ shop_name }}</h2>
+    <p><strong>Invoice #{{ invoice.id }}</strong></p>
+    <p>Date: {{ invoice.createdAt }}</p>
+    <p>Customer: {{ customer.name }} ({{ customer.email }})</p>
+    <hr/>
+    {% for item in items %}
+      <p>{{ item.description }} - ${{ item.cost }}</p>
+    {% endfor %}
+    <hr/>
+    <p><strong>Total: ${{ invoice.total }}</strong></p>
+  </body>
+</html>

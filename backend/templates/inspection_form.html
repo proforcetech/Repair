@@ -1,0 +1,12 @@
+<h2>Inspection Report</h2>
+<p>Appointment: {{ result.appointmentId }}</p>
+<ul>
+  {% for item in result.items %}
+    <li>{{ item.label }} - {{ item.status }}</li>
+  {% endfor %}
+</ul>
+
+{% if result.signature %}
+  <h4>Signed by Technician:</h4>
+  <img src="data:image/png;base64,{{ result.signature }}" width="200" />
+{% endif %}
