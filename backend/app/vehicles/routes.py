@@ -2,7 +2,7 @@
 # This file contains routes for managing vehicles, including adding new vehicles, retrieving user vehicles,
 # and managing vehicle history and maintenance contracts.
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from app.auth.dependencies import get_current_user
 from prisma import Prisma
 from pydantic import BaseModel
@@ -16,7 +16,7 @@ from uuid import uuid4
 from app.auth.dependencies import require_role
 from app.db.prisma_client import db
 
-APIRouter = APIRouter(prefix="/vehicles", tags=["vehicles"])
+router = APIRouter(prefix="/vehicles", tags=["vehicles"])
 
 db = Prisma()
 
