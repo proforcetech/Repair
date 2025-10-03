@@ -10,13 +10,13 @@ from app.core.audit import AuditLogMiddleware
 from app.technicians.routes import router as tech_router
 from app.core.scheduler import start as start_scheduler
 from app.accounting.routes import router as accounting_router
-#from app.customers.routes import router as customer_router
-#from app.customers.vehicles import router as vehicle_router
+from app.calendar.routes import router as calendar_router
+from app.customers.routes import router as customer_router
+from app.customers.vehicles import router as customer_vehicle_router
 from app.admin.routes import router as admin_router
 from app.alerts.routes import router as alert_router
 from app.appointments.routes import router as appointment_router
 from app.bank.routes import router as bank_router
-#from app.calendar.routes import router as calendar_router
 from app.estimates.routes import router as estimate_router
 from app.expenses.routes import router as expense_router
 from app.inventory.routes import router as inventory_router
@@ -28,7 +28,6 @@ from app.purchase.routes import router as purchase_router
 from app.repair.routes import router as repairorder_router
 from app.reports.routes import router as report_router
 from app.reviews.routes import router as review_router
-from app.users.routes import router as user_router
 from app.vehicles.routes import router as vehicle_router
 from app.vendors.routes import router as vendor_router
 from app.warranty.routes import router as warranty_router
@@ -54,7 +53,7 @@ app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(bank_router, prefix="/bank", tags=["Bank"])
 app.include_router(calendar_router, prefix="/calendar", tags=["Calendar"])
 app.include_router(customer_router, prefix="/customers", tags=["Customers"])
-app.include_router(vehicle_router, prefix="/customers", tags=["Vehicles"])
+app.include_router(customer_vehicle_router, prefix="/customers", tags=["Customer Vehicles"])
 app.include_router(estimate_router, prefix="/estimates", tags=["Estimates"])
 app.include_router(expense_router, prefix="/expenses", tags=["Expenses"])
 app.include_router(inventory_router, prefix="/inventory", tags=["Inventory"])
@@ -68,6 +67,7 @@ app.include_router(report_router, prefix="/reports", tags=["Reports"])
 app.include_router(review_router, prefix="/reviews", tags=["Reviews"])
 app.include_router(tech_router, prefix="/tech", tags=["technician"])
 app.include_router(user_router, prefix="/users", tags=["users"])
+app.include_router(vehicle_router, prefix="/vehicles", tags=["Vehicles"])
 app.include_router(vendor_router, prefix="/vendors", tags=["Vendors"])
 app.include_router(warranty_router, prefix="/warranty", tags=["Warranty Claims"])
 
