@@ -5,7 +5,6 @@ from typing import Optional
 
 import pyotp
 import qrcode
-import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -14,7 +13,13 @@ from user_agents import parse
 
 from app.auth.dependencies import get_current_user, require_role
 from app.core.notifier import send_email
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    create_password_reset_token,
+    hash_password,
+    verify_password,
+    verify_password_reset_token,
+)
 from app.db.prisma_client import db
 
 router = APIRouter(tags=["auth"])
@@ -178,18 +183,11 @@ async def logout(user=Depends(get_current_user)):
 
 @router.post("/request-password-reset")
 async def request_password_reset(data: PasswordResetRequest):
-    token = secrets.token_urlsafe(32)
-    expires = datetime.utcnow() + timedelta(hours=1)
-
     await db.connect()
     try:
         user = await db.user.find_unique(where={"email": data.email})
         if user:
-            await db.user.update(
-                where={"email": data.email},
-                data={"resetToken": token, "resetExpiresAt": expires},
-            )
-
+            token = create_password_reset_token(user.email)
             await send_email(
                 to=user.email,
                 subject="Reset your password",
@@ -203,25 +201,19 @@ async def request_password_reset(data: PasswordResetRequest):
 
 @router.post("/reset-password")
 async def reset_password(data: PasswordResetConfirm):
+    email = verify_password_reset_token(data.token)
+    if not email:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
     await db.connect()
     try:
-        user = await db.user.find_first(
-            where={
-                "resetToken": data.token,
-                "resetExpiresAt": {"gt": datetime.utcnow()},
-            }
-        )
-
+        user = await db.user.find_unique(where={"email": email})
         if not user:
             raise HTTPException(status_code=400, detail="Invalid or expired token")
 
         await db.user.update(
             where={"id": user.id},
-            data={
-                "hashedPwd": hash_password(data.new_password),
-                "resetToken": None,
-                "resetExpiresAt": None,
-            },
+            data={"hashedPwd": hash_password(data.new_password)},
         )
     finally:
         await db.disconnect()
