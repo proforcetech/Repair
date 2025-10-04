@@ -4,7 +4,6 @@
 # It uses the aiosmtplib library to send emails asynchronously.
 # It constructs an email message with the specified recipient, subject, and body.
 # Make sure to set the SMTP configuration in your environment variables.
-from fastapi import APIRouter
 from dotenv import load_dotenv
 import aiosmtplib
 from email.message import EmailMessage
@@ -30,6 +29,16 @@ async def send_email(to_email: str, subject: str, body: str):
         password=os.getenv("SMTP_PASS"),
         start_tls=True,
     )
+
+
+# Placeholder SMS sender used throughout the application.
+async def send_sms(phone: str, body: str) -> None:
+    """Send an SMS notification (stub implementation)."""
+
+    # Real implementation should integrate with Twilio or similar.
+    # The async signature is kept for compatibility with callers and tests can
+    # monkeypatch this coroutine to capture messages without performing network IO.
+    return None
 
 
 # This function sends a notification email to the user.
