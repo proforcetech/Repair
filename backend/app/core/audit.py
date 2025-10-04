@@ -1,39 +1,78 @@
 # backend/app/core/audit.py
 
-## Audit Log Middleware
-# This middleware logs every request made to the API, including the user who made the request and the action performed.
-# It connects to the Prisma database to store the logs and handles exceptions gracefully.
-# It also measures the time taken to process each request.
+from __future__ import annotations
+
+import logging
+import time
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Optional
+
+from prisma import Prisma
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from app.db.prisma_client import db
-from prisma import Prisma
-from fastapi import Request
-from app.auth.dependencies import get_current_user
+from starlette.types import ASGIApp
+
 from app.core.security import decode_token
-from typing import Optional
-from fastapi import HTTPException
-import time
+from app.db.prisma_client import db
+
+logger = logging.getLogger(__name__)
+
 
 class AuditLogMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: ASGIApp, prisma_client: Prisma = db) -> None:
+        super().__init__(app)
+        self._prisma = prisma_client
+
+    @asynccontextmanager
+    async def _prisma_session(self) -> AsyncIterator[Prisma]:
+        should_disconnect = False
+        if not self._prisma.is_connected():
+            await self._prisma.connect()
+            should_disconnect = True
+        try:
+            yield self._prisma
+        finally:
+            if should_disconnect:
+                await self._prisma.disconnect()
+
     async def dispatch(self, request: Request, call_next):
-        start_time = time.time()
+        start_time = time.perf_counter()
         response = await call_next(request)
-        token = request.headers.get("authorization")
-        if token and token.startswith("Bearer "):
-            try:
-                from app.core.security import decode_token
-                payload = decode_token(token[7:])
-                email = payload.get("sub")
-                db = Prisma()
-                await db.connect()
-                user = await db.user.find_unique(where={"email": email})
-                if user:
-                    await db.log.create({
+        latency_ms = (time.perf_counter() - start_time) * 1000
+
+        auth_header: Optional[str] = request.headers.get("authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return response
+
+        token = auth_header[7:]
+        try:
+            payload = decode_token(token)
+        except Exception:  # pragma: no cover - defensive logging path
+            logger.exception("Failed to decode token for audit logging")
+            return response
+
+        email = payload.get("sub") if isinstance(payload, dict) else None
+        if not email:
+            return response
+
+        client_ip = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+
+        try:
+            async with self._prisma_session() as prisma:
+                user = await prisma.user.find_unique(where={"email": email})
+                if not user:
+                    return response
+                await prisma.log.create(
+                    {
                         "action": f"{request.method} {request.url.path}",
-                        "userId": user.id
-                    })
-                await db.disconnect()
-            except Exception:
-                pass
+                        "userId": user.id,
+                        "latencyMs": latency_ms,
+                        "clientIp": client_ip,
+                        "userAgent": user_agent,
+                    }
+                )
+        except Exception:  # pragma: no cover - defensive logging path
+            logger.exception("Failed to persist audit log entry")
+
         return response

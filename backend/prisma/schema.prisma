@@ -58,6 +58,9 @@ model Log {
   action    String
   user      User     @relation(fields: [userId], references: [id])
   userId    String
+  latencyMs Float
+  clientIp  String?
+  userAgent String?
   timestamp DateTime @default(now())
 }
 
