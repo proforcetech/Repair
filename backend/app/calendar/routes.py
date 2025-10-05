@@ -1,162 +1,123 @@
-## File: backend/app/bank/routes.py
-## This file contains routes for managing bank transactions, including creating and uploading transactions.
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from pydantic import BaseModel
-from datetime import datetime
-from app.auth.dependencies import get_current_user, require_role, require_role, get_current_user
-from app.db.prisma_client import db
-from datetime import datetime, timedelta
-from fastapi import APIRouter, Request, Depends
-from fastapi import HTTPException
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from ics import Calendar, Event
-from pydantic import BaseModel
-from typing import Optional
-import csv
-import os
-import uuid
 
-router = APIRouter(prefix="/bank", tags=["bank"])
+from app.auth.dependencies import get_current_user, require_role
+from app.db.prisma_client import db
 
-# Vendor Bills Management Endpoints
-@router.post("/vendor-bills")
-async def record_vendor_bill(data: VendorBillCreate, user = Depends(get_current_user)):
-    require_role(["ACCOUNTANT", "ADMIN"])(user)
-    await db.connect()
-    bill = await db.vendorbill.create(data.dict())
-    await db.disconnect()
-    return {"message": "Vendor bill recorded", "bill": bill}
+from . import services
 
 
-# Calendar Webhook Endpoint
-# This will handle incoming webhooks from calendar providers (Google, Outlook)
-# It will update the appointment status based on the event ID and provider
-# The payload structure is expected to be:
-# {
-#   "event_id": "abc123",
-#   "status": "cancelled" | "updated",      # The status of the event
-#   "provider": "GOOGLE" | "OUTLOOK"         # The calendar provider
-# }
-@router.post("/calendar/webhook")
-async def calendar_webhook(request: Request):
-    payload = await request.json()
+router = APIRouter(prefix="/calendar", tags=["calendar"])
 
-    # Example structure:
-    # {
-    #   "event_id": "abc123",
-    #   "status": "cancelled" | "updated",
-    #   "provider": "GOOGLE" | "OUTLOOK"
-    # }
 
-    event_id = payload.get("event_id")
-    provider = payload.get("provider")
-    status = payload.get("status")
+def _dict_or_attr(record: Any, key: str, default: Any | None = None) -> Any:
+    """Return ``record[key]`` for dicts or ``getattr(record, key)`` for objects."""
 
-    if not event_id or not provider:
-        raise HTTPException(status_code=400, detail="Invalid payload")
+    if isinstance(record, dict):
+        return record.get(key, default)
+    return getattr(record, key, default)
 
-    await db.connect()
-    appt = await db.appointment.find_first(where={
-        "externalEventId": event_id,
-        "calendarProvider": provider.upper()
-    })
 
-    if not appt:
-        await db.disconnect()
-        raise HTTPException(status_code=404, detail="Appointment not found")
-
-    if status == "cancelled":
-        await db.appointment.update(where={"id": appt.id}, data={"status": "CANCELLED"})
-    elif status == "updated":
-        # Future: pull new details from provider
-        pass
-
-    await db.disconnect()
-    return {"message": "Webhook processed"}
-
-# Calendar View Endpoint
-# This will allow users to view appointments in a calendar format
-# It will filter by technician and date if provided
-@router.get("/calendar/full")
+@router.get("/full")
 async def full_calendar_view(
     technicianId: Optional[str] = None,
     day: Optional[str] = None,
-    user = Depends(get_current_user)
-):
+    user: Any = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Return appointments and bay information for the requested filters."""
+
     await db.connect()
+    try:
+        filters: Dict[str, Any] = {}
 
-    filters = {}
-    if technicianId:
-        filters["technicianId"] = technicianId
-    if day:
-        date = datetime.strptime(day, "%Y-%m-%d")
-        filters["startTime"] = {
-            "gte": date,
-            "lt": date + timedelta(days=1)
-        }
+        if technicianId:
+            filters["technicianId"] = technicianId
+        if day:
+            try:
+                date = datetime.strptime(day, "%Y-%m-%d")
+            except ValueError as exc:  # pragma: no cover - FastAPI handles validation
+                raise HTTPException(status_code=400, detail="Invalid day format") from exc
+            filters["startTime"] = {
+                "gte": date,
+                "lt": date + timedelta(days=1),
+            }
 
-    appointments = await db.appointment.find_many(where=filters, include={"technician": True})
-    bays = await db.workbay.find_many(include={"assignedJob": True})
-
-    await db.disconnect()
-    return {
-        "appointments": appointments,
-        "bays": bays
-    }
-
-# Public Calendar ICS Endpoint
-# This will generate an ICS file for public viewing of a technician's calendar
-# It will mark jobs as acknowledged when accessed via the public token
-@router.get("/calendar/public/{token}.ics")
-async def public_tech_ics(token: str):
-    await db.connect()
-    tech = await db.user.find_first(where={"publicCalendarToken": token})
-    if not tech:
+        appointments = await db.appointment.find_many(
+            where=filters, include={"technician": True}
+        )
+        bays = await db.workbay.find_many(include={"assignedJob": True})
+    finally:
         await db.disconnect()
-        raise HTTPException(status_code=404, detail="Invalid token")
 
-    jobs = await db.job.find_many(
-        where={"technicianId": tech.id, "acknowledged": False}
-    )
+    return {"appointments": appointments, "bays": bays}
 
-    for job in jobs:
-        await db.job.update(
-            where={"id": job.id},
-            data={"acknowledged": True, "acknowledgedAt": datetime.utcnow()}
+
+@router.get("/public/{token}.ics")
+async def public_technician_calendar(token: str) -> Response:
+    """Generate an ICS feed for a technician's public calendar."""
+
+    await db.connect()
+    try:
+        technician = await db.user.find_first(where={"publicCalendarToken": token})
+        if not technician:
+            raise HTTPException(status_code=404, detail="Invalid token")
+
+        jobs = await db.job.find_many(
+            where={"technicianId": _dict_or_attr(technician, "id"), "acknowledged": False}
         )
 
-    await db.disconnect()
+        now = datetime.now(timezone.utc)
+        for job in jobs:
+            job_id = _dict_or_attr(job, "id")
+            await db.job.update(
+                where={"id": job_id},
+                data={"acknowledged": True, "acknowledgedAt": now},
+            )
+    finally:
+        await db.disconnect()
 
-    # Return calendar file as before...
-# This will generate an ICS file for public viewing of a technician's calendar
-@router.post("/calendar/sync")
-async def sync_appointments_to_google(user=Depends(get_current_user)):
+    calendar_body = services.generate_public_calendar_ics(technician, jobs)
+    return Response(content=calendar_body, media_type="text/calendar")
+
+
+@router.post("/webhook")
+async def calendar_webhook(request: Request) -> Dict[str, str]:
+    payload = await request.json()
+
+    try:
+        await services.process_webhook_payload(payload)
+    except services.InvalidWebhookPayload as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except services.AppointmentNotFound as exc:
+        raise HTTPException(status_code=404, detail="Appointment not found") from exc
+
+    return {"message": "Webhook processed"}
+
+
+@router.post("/sync")
+async def sync_appointments_to_google(user: Any = Depends(get_current_user)) -> Dict[str, str]:
     require_role(["ADMIN", "MANAGER"])(user)
-    # This assumes access_token is stored or OAuth2 flow completed
-    token = await get_user_google_token(user.id)
-    events = await fetch_appointments_to_sync()
+
+    token = await services.get_user_google_token(_dict_or_attr(user, "id"))
+    events = await services.fetch_appointments_to_sync()
 
     for event in events:
-        await push_to_google_calendar(token, event)
+        await services.push_to_google_calendar(token, event)
 
     return {"message": f"{len(events)} appointments synced"}
 
-# Google OAuth Callback Endpoint
-# This will handle the OAuth callback from Google after user authorizes access
-@router.get("/calendar/oauth/callback")
-async def google_oauth_callback(code: str, user=Depends(get_current_user)):
-    # Exchange code for token
-    token_data = await exchange_google_code_for_token(code)
-    refresh_token = token_data["refresh_token"]
-    email = token_data["email"]
 
-    await db.connect()
-    await db.user.update(
-        where={"id": user.id},
-        data={
-            "googleRefreshToken": refresh_token,
-            "googleEmail": email
-        }
-    )
-    await db.disconnect()
+@router.get("/oauth/callback")
+async def google_oauth_callback(
+    code: str,
+    user: Any = Depends(get_current_user),
+) -> Dict[str, str]:
+    token_data = await services.exchange_google_code_for_token(code)
+    await services.store_google_credentials(_dict_or_attr(user, "id"), token_data)
     return {"message": "Google Calendar linked"}
+
