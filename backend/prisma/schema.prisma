@@ -1008,6 +1008,23 @@ model Vendor {
   bills     VendorBill[]
 }
 
+model ChatThread {
+  id           String        @id @default(uuid())
+  participants String[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  messages     ChatMessage[]
+}
+
+model ChatMessage {
+  id        String     @id @default(uuid())
+  threadId  String
+  senderId  String
+  body      String
+  sentAt    DateTime   @default(now())
+  thread    ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+}
+
 model VendorInvoice {
   id        String   @id @default(uuid())
   vendor    String
