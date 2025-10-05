@@ -1,45 +1,40 @@
-# File: backend/app/ws/routes.py
-# This file contains WebSocket routes for real-time job updates and notifications.
+"""WebSocket routes for broadcasting job updates."""
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from typing import List
 
-APIRouter = APIRouter(prefix="/ws", tags=["websockets"])
+from app.core.broadcast import (
+    register_job_connection,
+    register_technician_connection,
+    unregister_job_connection,
+    unregister_technician_connection,
+)
 
-active_connections: List[WebSocket] = []
+router = APIRouter(prefix="/ws", tags=["websockets"])
 
-@router.websocket("/ws/jobs")
-async def job_updates_ws(websocket: WebSocket):
+
+@router.websocket("/jobs")
+async def job_updates_ws(websocket: WebSocket) -> None:
     await websocket.accept()
-    active_connections.append(websocket)
-    try:
-        while True:
-            await websocket.receive_text()  # placeholder to keep connection alive
-    except WebSocketDisconnect:
-        active_connections.remove(websocket)
+    register_job_connection(websocket)
 
-tech_connections: dict[str, WebSocket] = {}
-
-@router.websocket("/ws/jobs/{tech_id}")
-async def job_updates_ws(websocket: WebSocket, tech_id: str):
-    await websocket.accept()
-    tech_connections[tech_id] = websocket
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        del tech_connections[tech_id]
+        pass
+    finally:
+        unregister_job_connection(websocket)
 
-connected_techs: set[str] = set()
 
-@router.websocket("/ws/jobs/{tech_id}")
-async def job_updates_ws(websocket: WebSocket, tech_id: str):
+@router.websocket("/jobs/{tech_id}")
+async def technician_job_updates_ws(websocket: WebSocket, tech_id: str) -> None:
     await websocket.accept()
-    tech_connections[tech_id] = websocket
-    connected_techs.add(tech_id)
+    register_technician_connection(tech_id, websocket)
+
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        tech_connections.pop(tech_id, None)
-        connected_techs.discard(tech_id)
+        pass
+    finally:
+        unregister_technician_connection(tech_id)
