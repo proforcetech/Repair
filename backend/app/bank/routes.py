@@ -17,6 +17,7 @@ from app.auth.dependencies import get_current_user, require_role
 from app.db.prisma_client import db
 import csv
 from fastapi import UploadFile, File
+from io import StringIO
 
 router = APIRouter(prefix="/bank", tags=["bank"])
 
@@ -53,16 +54,58 @@ async def match_transaction(tx_id: str, invoice_id: str, user = Depends(get_curr
 async def import_bank_txn(file: UploadFile = File(...), user=Depends(get_current_user)):
     require_role(["ACCOUNTANT"])(user)
     contents = await file.read()
-    decoded = contents.decode("utf-8").splitlines()
-    reader = csv.DictReader(decoded)
+    try:
+        decoded = contents.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Uploaded file must be UTF-8 encoded") from exc
+
+    reader = csv.DictReader(StringIO(decoded))
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV file is missing a header row")
+
+    required_columns = {"date", "amount", "type"}
+    missing_columns = required_columns.difference(reader.fieldnames)
+    if missing_columns:
+        formatted = ", ".join(sorted(missing_columns))
+        raise HTTPException(status_code=400, detail=f"Missing required columns: {formatted}")
+
+    staged_rows = []
+    for index, row in enumerate(reader, start=2):
+        raw_date = (row.get("date") or "").strip()
+        if not raw_date:
+            raise HTTPException(status_code=400, detail=f"Row {index}: 'date' is required")
+        try:
+            parsed_date = datetime.fromisoformat(raw_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Row {index}: invalid date '{raw_date}'") from exc
+
+        raw_amount = row.get("amount")
+        if raw_amount is None or str(raw_amount).strip() == "":
+            raise HTTPException(status_code=400, detail=f"Row {index}: 'amount' is required")
+        try:
+            amount = float(raw_amount)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Row {index}: invalid amount '{raw_amount}'") from exc
+
+        txn_type = (row.get("type") or "").strip()
+        if not txn_type:
+            raise HTTPException(status_code=400, detail=f"Row {index}: 'type' is required")
+
+        staged_rows.append({
+            "date": parsed_date,
+            "amount": amount,
+            "type": txn_type,
+            "memo": (row.get("memo") or "").strip(),
+        })
+
+    if not staged_rows:
+        return {"message": "No bank transactions to import", "count": 0}
 
     await db.connect()
-    for row in reader:
-        await db.banktransaction.create(data={
-            "date": datetime.fromisoformat(row["date"]),
-            "amount": float(row["amount"]),
-            "type": row["type"],
-            "memo": row.get("memo", "")
-        })
-    await db.disconnect()
-    return {"message": "Bank statement imported"}
+    try:
+        result = await db.banktransaction.create_many(data=staged_rows)
+    finally:
+        await db.disconnect()
+
+    created_count = getattr(result, "count", len(staged_rows))
+    return {"message": "Bank statement imported", "count": created_count}
