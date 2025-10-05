@@ -10,6 +10,7 @@ from email.message import EmailMessage
 import os
 import smtplib
 from email.mime.text import MIMEText
+from typing import Any
 load_dotenv()
 
 
@@ -38,6 +39,14 @@ async def send_sms(phone: str, body: str) -> None:
     # Real implementation should integrate with Twilio or similar.
     # The async signature is kept for compatibility with callers and tests can
     # monkeypatch this coroutine to capture messages without performing network IO.
+    return None
+
+
+async def notify_slack(channel: str, message: str, **_: Any) -> None:
+    """Send a Slack notification (stub implementation)."""
+
+    # Production code would post to a webhook URL. Tests can monkeypatch this
+    # coroutine to assert that the alert logic attempted to notify Slack.
     return None
 
 
