@@ -1,18 +1,18 @@
 # backend/app/alerts/routes.py
 # This file contains alert routes for monitoring system health and notifying users of issues.
-from fastapi import APIRouter, Depends
-from app.auth.dependencies import get_current_user, require_role
-from app.db.prisma_client import db
-from collections import Counter
-from collections import defaultdict
-from email.message import EmailMessage
-from fastapi import APIRouter
-from fastapi import Depends
-from twilio.rest import Client
 import smtplib
-from datetime import datetime, timedelta
+from collections import Counter, defaultdict
+from datetime import datetime, time, timedelta
+from email.message import EmailMessage
 from typing import Optional
-from app.core.notifier import send_sms, send_email, notify_user
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel
+
+from app.auth.dependencies import get_current_user, require_role
+from app.core.config import settings
+from app.core.notifier import notify_slack, notify_user, send_email, send_sms
+from app.db.prisma_client import db
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
@@ -58,7 +58,7 @@ async def bay_overload_alert(user = Depends(get_current_user)):
     alerts = []
     for bay, days in usage.items():
         for date, count in days.items():
-            if count > MAX_BAY_JOBS_PER_DAY:
+            if count > settings.MAX_BAY_JOBS_PER_DAY:
                 alerts.append({"bay": bay, "date": date, "job_count": count})
 
     if alerts:
@@ -180,13 +180,13 @@ async def alert_low_stock():
 
     if low_parts:
         part_list = "\n".join([f"{p.sku}: {p.description} - {p.quantityOnHand}" for p in low_parts])
-        send_email(
-            to="manager@shop.com",
+        await send_email(
+            to_email="manager@shop.com",
             subject="Low Stock Alert",
-            message=f"The following parts are below minimum:\n{part_list}"
+            body=f"The following parts are below minimum:\n{part_list}",
         )
-        send_sms("+12223334444", "Parts stock low. Check email for details.")
-        notify_slack("#inventory", f"🚨 Low stock detected:\n{part_list}")
+        await send_sms("+12223334444", "Parts stock low. Check email for details.")
+        await notify_slack("#inventory", f"🚨 Low stock detected:\n{part_list}")
 
 
 
@@ -210,18 +210,9 @@ async def alert_on_low_inventory():
         "alertSent": False
     })
     for p in low_parts:
-        send_sms("Inventory Low", f"Part {p.sku} is below threshold")
+        await send_sms("+15551234567", f"Inventory Low: Part {p.sku} is below threshold")
         await db.part.update(where={"id": p.id}, data={"alertSent": True})
     await db.disconnect()
-
-
-def send_sms(title: str, body: str):
-    client = Client("TWILIO_SID", "TWILIO_AUTH")
-    client.messages.create(
-        to="+15551234567",
-        from_="+15557654321",
-        body=f"{title}: {body}"
-    )
 
 def send_tech_summary_email(tech_email: str, summary: dict):
     body = f"You have {summary['count']} job(s) scheduled today.\n\n"
@@ -248,10 +239,13 @@ async def send_followups():
 
     for est in estimates:
         customer = await db.customer.find_unique(where={"id": est.customerId})
-        send_email(
-            to=customer.email,
+        await send_email(
+            to_email=customer.email,
             subject="Estimate expiring soon",
-            message=f"Your estimate #{est.id} will expire on {est.expiresAt.date()}. Contact us with questions."
+            body=(
+                f"Your estimate #{est.id} will expire on {est.expiresAt.date()}. "
+                "Contact us with questions."
+            ),
         )
         await db.estimate.update(where={"id": est.id}, data={"followUpSent": True})
     await db.disconnect()
@@ -307,8 +301,12 @@ async def send_service_reminders():
                 last_sent = v.lastReminderAt or datetime(2000, 1, 1)
                 if (datetime.utcnow() - last_sent).days >= 30:
                     customer = await db.customer.find_unique(where={"id": v.customerId})
-                    send_email(customer.email, "Service Reminder", f"Your vehicle {v.make} {v.model} is due for service.")
-                    send_sms(customer.phone, "Your car is due for service. Book now.")
+                    await send_email(
+                        customer.email,
+                        "Service Reminder",
+                        f"Your vehicle {v.make} {v.model} is due for service.",
+                    )
+                    await send_sms(customer.phone, "Your car is due for service. Book now.")
                     reminders.append(v.id)
 
     for vid in reminders:
