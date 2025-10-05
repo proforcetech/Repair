@@ -2,7 +2,7 @@
 # This file contains scheduled tasks for the application, such as sending weekly technician schedules.
 from app.db.prisma_client import db
 from fastapi import APIRouter
-from app.core.notifications import notify_user
+from app.core.notifier import notify_user
 from datetime import datetime, timedelta
 
 router = APIRouter(prefix="/scheduler", tags=["scheduler"])

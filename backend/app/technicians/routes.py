@@ -175,7 +175,7 @@ async def enable_tech_calendar(tech_id: str, user = Depends(get_current_user)):
     await db.disconnect()
     return {"calendar_url": f"https://yourdomain.com/api/calendar/public/{token}.ics"}
 
-from app.core.notifications import notify_user
+from app.core.notifier import notify_user
 
 @router.post("/notify-tech-job")
 async def notify_tech_of_job(job_id: str, user = Depends(get_current_user)):

@@ -4,20 +4,37 @@
 # It uses the aiosmtplib library to send emails asynchronously.
 # It constructs an email message with the specified recipient, subject, and body.
 # Make sure to set the SMTP configuration in your environment variables.
-from dotenv import load_dotenv
-import aiosmtplib
-from email.message import EmailMessage
+from __future__ import annotations
+
+import asyncio
+import functools
+import logging
 import os
-import smtplib
-from email.mime.text import MIMEText
-from typing import Any
+from email.message import EmailMessage
+from importlib import util as importlib_util
+from typing import Any, Protocol
+
+import aiosmtplib
+from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "send_email",
+    "send_sms",
+    "notify_slack",
+    "notify_user",
+    "get_sms_provider",
+    "set_sms_provider",
+    "TwilioSMSProvider",
+]
 load_dotenv()
 
 
 # This module handles email notifications for the application.
-async def send_email(to_email: str, subject: str, body: str):
+async def send_email(to_email: str, subject: str, body: str) -> None:
     msg = EmailMessage()
-    msg["From"] = os.getenv("EMAIL_FROM")
+    msg["From"] = os.getenv("EMAIL_FROM", "noreply@repairshop.com")
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.set_content(body)
@@ -32,14 +49,99 @@ async def send_email(to_email: str, subject: str, body: str):
     )
 
 
-# Placeholder SMS sender used throughout the application.
-async def send_sms(phone: str, body: str) -> None:
-    """Send an SMS notification (stub implementation)."""
+class SMSProvider(Protocol):
+    """Protocol describing an async-capable SMS provider."""
 
-    # Real implementation should integrate with Twilio or similar.
-    # The async signature is kept for compatibility with callers and tests can
-    # monkeypatch this coroutine to capture messages without performing network IO.
-    return None
+    async def send(self, phone: str, body: str) -> None:  # pragma: no cover - protocol
+        """Deliver ``body`` to ``phone``."""
+
+
+class ConsoleSMSProvider:
+    """Fallback provider that logs SMS payloads for debugging."""
+
+    async def send(self, phone: str, body: str) -> None:
+        logger.info("SMS to %s: %s", phone, body)
+
+
+_twilio_package_spec = importlib_util.find_spec("twilio")
+_twilio_rest_spec = importlib_util.find_spec("twilio.rest") if _twilio_package_spec else None
+if _twilio_package_spec and _twilio_rest_spec:
+    from twilio.rest import Client as TwilioClient  # type: ignore[conditional-import]
+else:  # pragma: no cover - exercised when twilio isn't installed
+    TwilioClient = None  # type: ignore[assignment]
+
+
+class TwilioSMSProvider:
+    """Async wrapper around the synchronous Twilio REST client."""
+
+    def __init__(
+        self,
+        account_sid: str,
+        auth_token: str,
+        from_number: str,
+        *,
+        client: Any | None = None,
+    ) -> None:
+        if client is None:
+            if TwilioClient is None:  # pragma: no cover - requires optional dependency
+                raise RuntimeError("twilio package is not installed")
+            client = TwilioClient(account_sid, auth_token)
+
+        self._client = client
+        self._from_number = from_number
+
+    async def send(self, phone: str, body: str) -> None:
+        loop = asyncio.get_running_loop()
+        create_message = functools.partial(
+            self._client.messages.create,
+            to=phone,
+            from_=self._from_number,
+            body=body,
+        )
+        await loop.run_in_executor(None, create_message)
+
+
+_sms_provider: SMSProvider | None = None
+
+
+def set_sms_provider(provider: SMSProvider | None) -> None:
+    """Override the global SMS provider used by :func:`send_sms`."""
+
+    global _sms_provider
+    _sms_provider = provider
+
+
+def get_sms_provider() -> SMSProvider:
+    """Return the configured SMS provider, initialising the default as needed."""
+
+    global _sms_provider
+    if _sms_provider is None:
+        _sms_provider = _build_default_sms_provider()
+    return _sms_provider
+
+
+def _build_default_sms_provider() -> SMSProvider:
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+    from_number = os.getenv("TWILIO_FROM_NUMBER")
+
+    if account_sid and auth_token and from_number:
+        if TwilioClient is None:
+            logger.warning(
+                "Twilio credentials provided but the twilio package is not installed; "
+                "falling back to console SMS provider."
+            )
+        else:
+            return TwilioSMSProvider(account_sid, auth_token, from_number)
+
+    return ConsoleSMSProvider()
+
+
+async def send_sms(phone: str, body: str) -> None:
+    """Send an SMS notification using the configured provider."""
+
+    provider = get_sms_provider()
+    await provider.send(phone, body)
 
 
 async def notify_slack(channel: str, message: str, **_: Any) -> None:
@@ -51,17 +153,10 @@ async def notify_slack(channel: str, message: str, **_: Any) -> None:
 
 
 # This function sends a notification email to the user.
-# It uses the smtplib library to send an email with the specified subject and body.
-# The email is sent from a predefined "noreply" address.
-# Make sure to replace the SMTP configuration with your actual settings.
-async def notify_user(email: str, subject: str, body: str):
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = "noreply@repairshop.com"
-    msg["To"] = email
+# It reuses the async SMTP helper above so the same configuration applies
+# everywhere we send mail from the platform.
+async def notify_user(email: str, subject: str, body: str) -> None:
+    """Notify a user via email using the async SMTP helper."""
 
-    # Replace with actual SMTP config
-    smtp = smtplib.SMTP("localhost")
-    smtp.send_message(msg)
-    smtp.quit()
+    await send_email(email, subject, body)
 
