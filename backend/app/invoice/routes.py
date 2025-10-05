@@ -16,13 +16,14 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from app.auth.dependencies import get_current_user, require_role
+from app.core.config import settings
 from app.db.prisma_client import db
 
 apirouter = APIRouter(prefix="/invoice", tags=["invoice"])
 
 
 load_dotenv()
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+stripe.api_key = settings.stripe_secret_key
 
 @router.post("/invoice/{id}/pay/online")
 async def stripe_checkout(id: str, user = Depends(get_current_user)):
@@ -187,16 +188,12 @@ async def get_invoice_margin(invoice_id: str, user = Depends(get_current_user)):
         "gross_margin_percent": margin
     }
 
-from app.core.config import INVOICE_MARGIN_ALERT_THRESHOLD
-
-...
-
 parts = await db.invoicepart.find_many(where={"invoiceId": invoice_id})
 total_cost = sum(p.cost * p.quantity for p in parts)
 total_price = sum(p.unitPrice * p.quantity for p in parts)
 margin = round(((total_price - total_cost) / total_price) * 100, 2) if total_price else 0
 
-if margin < INVOICE_MARGIN_ALERT_THRESHOLD:
+if margin < settings.thresholds.invoice_margin_alert_percent:
     # Optionally log or notify manager
     await notify_user(
         email="manager@repairshop.com",

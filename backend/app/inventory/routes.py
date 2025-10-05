@@ -2,6 +2,7 @@
 # This file contains inventory management routes for handling parts, stock transfers, and purchase orders.
 
 from fastapi import APIRouter, Depends, HTTPException
+from app.core.config import settings
 from app.core.notifier import send_email
 from fastapi import UploadFile, File
 import uuid, os
@@ -621,7 +622,7 @@ async def auto_reorder_from_substitution(user = Depends(get_current_user)):
 
     reordered = []
     for sku, c in count.items():
-        if c >= SUBSTITUTION_REORDER_THRESHOLD:
+        if c >= settings.thresholds.substitution_reorder:
             await db.purchaseorder.create({
                 "sku": sku,
                 "quantity": 10,  # configurable default
@@ -678,7 +679,7 @@ async def restock_item(
         order={"createdAt": "desc"}
     )
 
-    if last and unit_cost > last.unitCost * UNIT_COST_ALERT_THRESHOLD:
+    if last and unit_cost > last.unitCost * settings.thresholds.unit_cost_multiplier:
         await notify_user(
             email="procurement@repairshop.com",
             subject="⚠️ High Unit Cost Alert",

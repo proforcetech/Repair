@@ -58,7 +58,7 @@ async def bay_overload_alert(user = Depends(get_current_user)):
     alerts = []
     for bay, days in usage.items():
         for date, count in days.items():
-            if count > settings.MAX_BAY_JOBS_PER_DAY:
+            if count > settings.thresholds.max_bay_jobs_per_day:
                 alerts.append({"bay": bay, "date": date, "job_count": count})
 
     if alerts:

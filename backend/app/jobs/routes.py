@@ -3,6 +3,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from app.auth.dependencies import get_current_user, require_role
+from app.core.config import settings
 from app.db.prisma_client import db
 from datetime import datetime
 
@@ -294,7 +295,7 @@ async def create_job(data: JobCreate, user = Depends(get_current_user)):
     )
     await db.disconnect()
 
-    if len(jobs_today) >= MAX_BAY_JOBS_PER_DAY:
+    if len(jobs_today) >= settings.thresholds.max_bay_jobs_per_day:
         raise HTTPException(status_code=400, detail="Bay is at capacity for today")
 
     # Proceed with job creation
