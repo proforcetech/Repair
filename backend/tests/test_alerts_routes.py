@@ -143,7 +143,7 @@ def test_bay_overload_alert_uses_settings_threshold(fake_db: FakeDB, monkeypatch
         SimpleNamespace(bayId="BAY-1", createdAt=datetime(2024, 1, 1, 10, 0, 0)),
     ]
 
-    monkeypatch.setattr(routes.settings, "MAX_BAY_JOBS_PER_DAY", 2)
+    monkeypatch.setattr(routes.settings.thresholds, "max_bay_jobs_per_day", 2)
 
     notifications: List[tuple[tuple[Any, ...], dict[str, Any]]] = []
 

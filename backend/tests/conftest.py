@@ -31,6 +31,21 @@ if "passlib" not in sys.modules:
 if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = types.SimpleNamespace(load_dotenv=lambda *args, **kwargs: None)
 
+try:  # pragma: no cover - compatibility shim for Python 3.12 + pydantic v1
+    import inspect
+    from typing import ForwardRef
+
+    import pydantic.typing as _pydantic_typing
+
+    _evaluate_signature = inspect.signature(ForwardRef._evaluate)
+    if "recursive_guard" in _evaluate_signature.parameters:
+        def _patched_evaluate_forwardref(type_, globalns, localns):
+            return type_._evaluate(globalns, localns, recursive_guard=set())
+
+        _pydantic_typing.evaluate_forwardref = _patched_evaluate_forwardref
+except Exception:  # pragma: no cover - only executed when optional deps missing
+    pass
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 # Import core security early so that optional dependencies like `jose`

@@ -9,13 +9,13 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-import os
 from email.message import EmailMessage
 from importlib import util as importlib_util
 from typing import Any, Protocol
 
 import aiosmtplib
-from dotenv import load_dotenv
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +28,21 @@ __all__ = [
     "set_sms_provider",
     "TwilioSMSProvider",
 ]
-load_dotenv()
-
-
 # This module handles email notifications for the application.
 async def send_email(to_email: str, subject: str, body: str) -> None:
     msg = EmailMessage()
-    msg["From"] = os.getenv("EMAIL_FROM", "noreply@repairshop.com")
+    smtp_config = settings.smtp
+    msg["From"] = smtp_config.from_address
     msg["To"] = to_email
     msg["Subject"] = subject
     msg.set_content(body)
 
     await aiosmtplib.send(
         msg,
-        hostname=os.getenv("SMTP_HOST"),
-        port=int(os.getenv("SMTP_PORT", 587)),
-        username=os.getenv("SMTP_USER"),
-        password=os.getenv("SMTP_PASS"),
+        hostname=smtp_config.host,
+        port=smtp_config.port,
+        username=smtp_config.username,
+        password=smtp_config.password,
         start_tls=True,
     )
 
@@ -121,9 +119,10 @@ def get_sms_provider() -> SMSProvider:
 
 
 def _build_default_sms_provider() -> SMSProvider:
-    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-    from_number = os.getenv("TWILIO_FROM_NUMBER")
+    twilio = settings.twilio
+    account_sid = twilio.account_sid
+    auth_token = twilio.auth_token
+    from_number = twilio.from_number
 
     if account_sid and auth_token and from_number:
         if TwilioClient is None:

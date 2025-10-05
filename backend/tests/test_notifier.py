@@ -32,11 +32,11 @@ def test_send_email_uses_aiosmtplib(monkeypatch: pytest.MonkeyPatch) -> None:
         captured["kwargs"] = kwargs
 
     monkeypatch.setattr(notifier.aiosmtplib, "send", fake_send)
-    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
-    monkeypatch.setenv("SMTP_PORT", "2525")
-    monkeypatch.setenv("SMTP_USER", "smtp-user")
-    monkeypatch.setenv("SMTP_PASS", "smtp-pass")
-    monkeypatch.setenv("EMAIL_FROM", "alerts@example.com")
+    monkeypatch.setattr(notifier.settings.smtp, "host", "smtp.example.com")
+    monkeypatch.setattr(notifier.settings.smtp, "port", 2525)
+    monkeypatch.setattr(notifier.settings.smtp, "username", "smtp-user")
+    monkeypatch.setattr(notifier.settings.smtp, "password", "smtp-pass")
+    monkeypatch.setattr(notifier.settings.smtp, "from_address", "alerts@example.com")
 
     async def _run() -> None:
         await notifier.send_email("user@example.com", "System Update", "Hello!")
