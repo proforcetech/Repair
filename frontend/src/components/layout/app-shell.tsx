@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { ReactNode, useState } from "react";
 import { clsx } from "clsx";
 
 import { useLayoutStore } from "@/stores/layout-store";
+import { useSession } from "@/hooks/use-session";
 
 const navigation = [
     { label: "Dashboard", href: "/" },
@@ -20,7 +21,21 @@ type AppShellProps = {
 
 export function AppShell({ children }: AppShellProps) {
     const pathname = usePathname();
+    const router = useRouter();
     const { isSidebarOpen, toggleSidebar, closeSidebar } = useLayoutStore();
+    const { user, isAuthenticated } = useSession();
+    const [isSigningOut, setIsSigningOut] = useState(false);
+
+    const handleSignOut = async () => {
+        setIsSigningOut(true);
+        try {
+            await fetch("/api/auth/logout", { method: "POST" });
+            router.replace("/login");
+            router.refresh();
+        } finally {
+            setIsSigningOut(false);
+        }
+    };
 
     const NavItems = () => (
         <nav className="flex flex-col gap-1">
@@ -75,16 +90,33 @@ export function AppShell({ children }: AppShellProps) {
                             <span className="hidden text-lg tracking-tight sm:inline">Auto Repair Portal</span>
                         </Link>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-3">
                         <div className="hidden items-center gap-2 lg:flex">
                             <NavItems />
                         </div>
-                        <button
-                            type="button"
-                            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
-                        >
-                            <span>New ticket</span>
-                        </button>
+                        {isAuthenticated ? (
+                            <div className="flex items-center gap-2">
+                                <div className="hidden text-right text-xs leading-tight sm:block">
+                                    <p className="font-semibold text-foreground">{user?.email}</p>
+                                    <p className="uppercase tracking-wide text-muted-foreground">{user?.role}</p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={handleSignOut}
+                                    className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+                                    disabled={isSigningOut}
+                                >
+                                    {isSigningOut ? "Signing out…" : "Sign out"}
+                                </button>
+                            </div>
+                        ) : (
+                            <Link
+                                href="/login"
+                                className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+                            >
+                                Sign in
+                            </Link>
+                        )}
                     </div>
                 </div>
             </header>
