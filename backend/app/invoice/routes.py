@@ -1,304 +1,414 @@
-# backend/app/invoice/routes.py
-# This file contains invoice management routes for handling customer invoices, payments, and PDF generation.
+"""Invoice management routes.
 
+This module exposes invoice list/detail endpoints along with
+payment handling, PDF exports, and manager-facing analytics.
+The implementation intentionally keeps business logic close to
+the HTTP layer because integration tests patch the prisma client
+with simple in-memory fakes.
+"""
 
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
-from email.message import EmailMessage
-from fastapi.responses import FileResponse
-from fastapi.responses import StreamingResponse
-from jinja2 import Environment, FileSystemLoader
-from weasyprint import HTML
-import aiosmtplib
-import os
-import smtplib
+from __future__ import annotations
+
+import io
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Sequence
+
 import stripe
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+
 from app.auth.dependencies import get_current_user, require_role
 from app.core.config import settings
 from app.db.prisma_client import db
 
-apirouter = APIRouter(prefix="/invoice", tags=["invoice"])
+
+router = APIRouter(prefix="/invoice", tags=["Invoices"])
 
 
-load_dotenv()
-stripe.api_key = settings.stripe_secret_key
-
-@router.post("/invoice/{id}/pay/online")
-async def stripe_checkout(id: str, user = Depends(get_current_user)):
-    await db.connect()
-    invoice = await db.invoice.find_unique(where={"id": id}, include={"items": True})
-    if not invoice or invoice.customerId != user.id:
-        await db.disconnect()
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    amount = int((invoice.total + invoice.lateFee) * 100)  # cents
-
-    session = stripe.checkout.Session.create(
-        payment_method_types=["card"],
-        line_items=[{
-            "price_data": {
-                "currency": "usd",
-                "product_data": {"name": f"Invoice {invoice.id}"},
-                "unit_amount": amount,
-            },
-            "quantity": 1,
-        }],
-        mode="payment",
-        success_url="https://your-app/success",
-        cancel_url="https://your-app/cancel",
-        metadata={"invoice_id": invoice.id}
-    )
-    await db.disconnect()
-    return {"checkout_url": session.url}
-
-
-def calculate_late_fee(invoice, daily_rate: float = 2.0) -> float:
-    if not invoice.dueDate:
-        return 0.0
-    today = datetime.utcnow()
-    grace = invoice.dueDate + timedelta(days=invoice.graceDays)
-    if today <= grace:
-        return 0.0
-    days_overdue = (today - grace).days
-    return round(days_overdue * daily_rate, 2)
-
-
-@router.get("/invoice/{invoice_id}/pdf")
-async def generate_invoice_pdf(invoice_id: str, user = Depends(get_current_user)):
-    await db.connect()
-    invoice = await db.invoice.find_unique(where={"id": invoice_id}, include={"items": True})
-    if not invoice or invoice.customerId != user.id:
-        await db.disconnect()
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    customer = await db.user.find_unique(where={"id": invoice.customerId})
-    await db.disconnect()
-
-    env = Environment(loader=FileSystemLoader("templates"))
-    html = env.get_template("invoice.html").render(invoice=invoice, customer=customer, items=invoice.items)
-
-    file_path = f"/tmp/invoice_{invoice.id}.pdf"
-    HTML(string=html).write_pdf(file_path)
-    return FileResponse(file_path, media_type="application/pdf", filename=f"Invoice-{invoice.id}.pdf")
-
-
-
-
-async def send_invoice_email(to_email: str, subject: str, body: str, pdf_path: str):
-    message = EmailMessage()
-    message["From"] = "you@example.com"
-    message["To"] = to_email
-    message["Subject"] = subject
-    message.set_content(body)
-    with open(pdf_path, "rb") as f:
-        message.add_attachment(f.read(), maintype="application", subtype="pdf", filename=os.path.basename(pdf_path))
-    await aiosmtplib.send(message, hostname="smtp.gmail.com", port=587, start_tls=True, username="you@example.com", password="yourpassword")
+if settings.stripe_secret_key:
+    stripe.api_key = settings.stripe_secret_key
 
 
 class PaymentCreate(BaseModel):
-    amount: float
-    method: str
+    amount: float = Field(gt=0, description="Amount collected for the invoice")
+    method: str = Field(min_length=2, description="Payment method descriptor")
 
-@router.post("/invoice/{id}/pay")
-async def add_payment(id: str, data: PaymentCreate, user = Depends(get_current_user)):
+
+class FinalizeResponse(BaseModel):
+    message: str
+    status: str
+    finalized_at: datetime
+
+
+def _extract_customer_name(customer: Dict[str, Any] | None) -> str | None:
+    if not customer:
+        return None
+    name = customer.get("name") or customer.get("fullName")
+    if name:
+        return str(name)
+    first = customer.get("firstName")
+    last = customer.get("lastName")
+    if first or last:
+        return " ".join(filter(None, [first, last])).strip() or None
+    return None
+
+
+def _sum_payments(payments: Iterable[Dict[str, Any]]) -> float:
+    total = 0.0
+    for payment in payments:
+        amount = payment.get("amount")
+        if isinstance(amount, (int, float)):
+            total += float(amount)
+    return round(total, 2)
+
+
+def _coerce_number(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _invoice_total(invoice: Dict[str, Any]) -> float:
+    explicit_total = invoice.get("total")
+    if isinstance(explicit_total, (int, float)):
+        return float(explicit_total)
+    subtotal = _coerce_number(invoice.get("subtotal"))
+    tax = _coerce_number(invoice.get("tax"))
+    fees = _coerce_number(invoice.get("lateFee"))
+    discounts = _coerce_number(invoice.get("discountTotal"))
+    total = subtotal + tax + fees - discounts
+    return round(total, 2)
+
+
+def _invoice_balance(invoice: Dict[str, Any]) -> float:
+    payments = invoice.get("payments") or []
+    late_fee = _coerce_number(invoice.get("lateFee"))
+    total = _invoice_total(invoice)
+    paid = _sum_payments(payments)
+    balance = total + late_fee - paid
+    return round(balance, 2)
+
+
+def _format_invoice_summary(invoice: Dict[str, Any]) -> Dict[str, Any]:
+    payments = invoice.get("payments") or []
+    return {
+        "id": invoice.get("id"),
+        "number": invoice.get("number") or invoice.get("id"),
+        "status": invoice.get("status") or "DRAFT",
+        "issuedDate": invoice.get("issuedDate") or invoice.get("createdAt"),
+        "dueDate": invoice.get("dueDate"),
+        "total": _invoice_total(invoice),
+        "lateFee": _coerce_number(invoice.get("lateFee")),
+        "balanceDue": _invoice_balance(invoice),
+        "customer": {
+            "id": (invoice.get("customer") or {}).get("id") or invoice.get("customerId"),
+            "name": _extract_customer_name(invoice.get("customer")),
+            "email": (invoice.get("customer") or {}).get("email"),
+        },
+        "payments": [
+            {
+                "id": payment.get("id"),
+                "amount": _coerce_number(payment.get("amount")),
+                "method": payment.get("method"),
+                "receivedAt": payment.get("receivedAt") or payment.get("createdAt"),
+            }
+            for payment in payments
+        ],
+    }
+
+
+async def _load_invoice(invoice_id: str, *, include_items: bool = False) -> Dict[str, Any]:
+    include = {"customer": True, "payments": True}
+    if include_items:
+        include["items"] = True
     await db.connect()
-    invoice = await db.invoice.find_unique(where={"id": id})
-    if not invoice or invoice.customerId != user.id:
+    try:
+        invoice = await db.invoice.find_unique(where={"id": invoice_id}, include=include)
+    finally:
         await db.disconnect()
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return dict(invoice)
 
-    late_fee = calculate_late_fee(invoice)
-    await db.invoice.update(where={"id": id}, data={"lateFee": late_fee})
-    total_due = invoice.total + late_fee
 
-    payment = await db.payment.create({
-        "invoiceId": id,
-        "amount": data.amount,
-        "method": data.method
-    })
-
-    payments = await db.payment.aggregate(
-        where={"invoiceId": id},
-        _sum={"amount": True}
+def _running_balances(invoice: Dict[str, Any]) -> List[Dict[str, Any]]:
+    payments = sorted(
+        invoice.get("payments") or [],
+        key=lambda payment: payment.get("receivedAt") or payment.get("createdAt") or datetime.now(timezone.utc),
     )
+    balance = _invoice_total(invoice) + _coerce_number(invoice.get("lateFee"))
+    enriched: List[Dict[str, Any]] = []
+    for payment in payments:
+        amount = _coerce_number(payment.get("amount"))
+        balance = round(balance - amount, 2)
+        enriched.append(
+            {
+                "id": payment.get("id"),
+                "amount": amount,
+                "method": payment.get("method"),
+                "receivedAt": payment.get("receivedAt") or payment.get("createdAt"),
+                "runningBalance": balance,
+            }
+        )
+    return enriched
 
-    total_paid = payments._sum.amount or 0
-    status = "PAID" if total_paid >= invoice.total else "PARTIALLY_PAID"
 
-    await db.invoice.update(where={"id": id}, data={"status": status})
-    await db.disconnect()
-    return {"payment": payment, "total_paid": total_paid, "status": status}
+def _margin_from_items(items: Iterable[Dict[str, Any]]) -> Dict[str, float]:
+    total_cost = 0.0
+    total_price = 0.0
+    for item in items:
+        quantity = _coerce_number(item.get("quantity")) or 1
+        total_cost += _coerce_number(item.get("cost")) * quantity
+        total_price += _coerce_number(item.get("unitPrice")) * quantity
+    margin_percent = 0.0
+    if total_price > 0:
+        margin_percent = round(((total_price - total_cost) / total_price) * 100, 2)
+    return {
+        "cost": round(total_cost, 2),
+        "price": round(total_price, 2),
+        "margin": margin_percent,
+    }
 
-async def reward_loyalty(invoice_id: str):
+
+def _user_attr(user: Any, attribute: str) -> Any:
+    if hasattr(user, attribute):
+        return getattr(user, attribute)
+    if isinstance(user, dict):
+        return user.get(attribute)
+    return None
+
+
+@router.get("", summary="List invoices accessible to the authenticated user")
+async def list_invoices(user: Any = Depends(get_current_user)) -> List[Dict[str, Any]]:
+    filters: Dict[str, Any] = {}
+    include = {"customer": True, "payments": True}
+    privileged_roles = {"ADMIN", "MANAGER", "ACCOUNTANT"}
+    user_role = _user_attr(user, "role")
+    user_id = _user_attr(user, "id")
+    if user_role not in privileged_roles:
+        filters["customerId"] = user_id
     await db.connect()
-    invoice = await db.invoice.find_unique(where={"id": invoice_id}, include={"customer": True})
-    if not invoice or invoice.status != "PAID":
+    try:
+        invoices: Sequence[Dict[str, Any]] = await db.invoice.find_many(
+            where=filters or None,
+            include=include,
+            order_by={"createdAt": "desc"},
+        )
+    finally:
         await db.disconnect()
-        return
+    return [_format_invoice_summary(dict(invoice)) for invoice in invoices]
 
-    points = int(invoice.total // 50)  # 1 point per $50 spent
-    await db.customer.update(
-        where={"id": invoice.customer.id},
-        data={
-            "loyaltyPoints": {"increment": points},
-            "visits": {"increment": 1}
+
+@router.get("/{invoice_id}", summary="Retrieve invoice detail")
+async def get_invoice(invoice_id: str, user: Any = Depends(get_current_user)) -> Dict[str, Any]:
+    invoice = await _load_invoice(invoice_id, include_items=True)
+    privileged_roles = {"ADMIN", "MANAGER", "ACCOUNTANT", "SERVICE_ADVISOR"}
+    user_role = _user_attr(user, "role")
+    user_id = _user_attr(user, "id")
+    if user_role not in privileged_roles and invoice.get("customerId") != user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized to view invoice")
+
+    items = [
+        {
+            "id": item.get("id"),
+            "description": item.get("description") or item.get("name"),
+            "quantity": _coerce_number(item.get("quantity")) or 1,
+            "unitPrice": _coerce_number(item.get("unitPrice")),
+            "cost": _coerce_number(item.get("cost")),
+        }
+        for item in (invoice.get("items") or [])
+    ]
+
+    payments = _running_balances(invoice)
+    loyalty_snapshot = invoice.get("loyalty") or {}
+
+    summary = _format_invoice_summary(invoice)
+    summary.update(
+        {
+            "items": items,
+            "payments": payments,
+            "subtotal": _coerce_number(invoice.get("subtotal")),
+            "tax": _coerce_number(invoice.get("tax")),
+            "discountTotal": _coerce_number(invoice.get("discountTotal")),
+            "loyalty": {
+                "pointsEarned": int(loyalty_snapshot.get("pointsEarned", 0)),
+                "customerBalance": int(loyalty_snapshot.get("customerBalance", 0)),
+            },
         }
     )
-    await db.disconnect()
+    return summary
 
 
-@router.post("/invoices/{invoice_id}/finalize")
-async def finalize_invoice(invoice_id: str, user = Depends(get_current_user)):
-    require_role(["MANAGER", "ADMIN"])(user)
+@router.post("/{invoice_id}/pay", summary="Record a manual payment")
+async def record_payment(
+    invoice_id: str,
+    payload: PaymentCreate,
+    user: Any = Depends(get_current_user),
+) -> Dict[str, Any]:
+    invoice = await _load_invoice(invoice_id, include_items=False)
+    privileged_roles = {"ADMIN", "MANAGER", "ACCOUNTANT"}
+    user_role = _user_attr(user, "role")
+    user_id = _user_attr(user, "id")
+    if user_role not in privileged_roles and invoice.get("customerId") != user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized to record payment")
+
     await db.connect()
-
-    invoice = await db.invoice.find_unique(where={"id": invoice_id})
-    if not invoice:
+    try:
+        payment = await db.payment.create(
+            {
+                "invoiceId": invoice_id,
+                "amount": payload.amount,
+                "method": payload.method,
+                "receivedAt": datetime.now(timezone.utc),
+            }
+        )
+        payments = await db.payment.find_many(where={"invoiceId": invoice_id})
+        paid_total = _sum_payments(payments)
+        total_due = _invoice_total(invoice) + _coerce_number(invoice.get("lateFee"))
+        remaining = round(total_due - paid_total, 2)
+        status = "PAID" if remaining <= 0 else "PARTIALLY_PAID"
+        await db.invoice.update(where={"id": invoice_id}, data={"status": status})
+    finally:
         await db.disconnect()
-        raise HTTPException(status_code=404, detail="Invoice not found")
 
-    # Update invoice status
-    await db.invoice.update(where={"id": invoice_id}, data={"status": "FINALIZED"})
-
-    # Mark job parts as used
-    await db.jobpart.update_many(
-        where={"jobId": invoice.jobId},
-        data={"used": True}
-    )
-
-    await db.disconnect()
-    return {"message": "Invoice finalized and parts marked used"}
-
-
-@router.get("/invoices/{invoice_id}/margin")
-async def get_invoice_margin(invoice_id: str, user = Depends(get_current_user)):
-    require_role(["MANAGER", "ADMIN"])(user)
-    await db.connect()
-
-    parts = await db.invoicepart.find_many(where={"invoiceId": invoice_id})
-    await db.disconnect()
-
-    total_cost = sum(p.cost * p.quantity for p in parts)
-    total_price = sum(p.unitPrice * p.quantity for p in parts)
-    margin = round(((total_price - total_cost) / total_price) * 100, 2) if total_price > 0 else 0
-
-    return {
-        "total_cost": total_cost,
-        "total_price": total_price,
-        "gross_margin_percent": margin
-    }
-
-parts = await db.invoicepart.find_many(where={"invoiceId": invoice_id})
-total_cost = sum(p.cost * p.quantity for p in parts)
-total_price = sum(p.unitPrice * p.quantity for p in parts)
-margin = round(((total_price - total_cost) / total_price) * 100, 2) if total_price else 0
-
-if margin < settings.thresholds.invoice_margin_alert_percent:
-    # Optionally log or notify manager
-    await notify_user(
-        email="manager@repairshop.com",
-        subject="?? Low Margin Invoice Alert",
-        body=f"Invoice {invoice_id} has a gross margin of {margin}%."
-    )
-
-@router.post("/expenses/{id}/invoice")
-async def upload_expense_invoice(id: str, file: UploadFile = File(...), user = Depends(get_current_user)):
-    require_role(["ACCOUNTANT", "ADMIN"])(user)
-
-    ext = file.filename.split(".")[-1]
-    fname = f"{uuid.uuid4()}.{ext}"
-    path = os.path.join("/app/static/expense_invoices", fname)
-
-    with open(path, "wb") as f:
-        f.write(await file.read())
-
-    url = f"/static/expense_invoices/{fname}"
-    await db.connect()
-    await db.expense.update(where={"id": id}, data={"invoiceFileUrl": url})
-    await db.disconnect()
-
-    return {"message": "Invoice uploaded", "url": url}
-
-
-@router.get("/invoices/{invoice_id}/pdf")
-async def get_invoice_pdf(invoice_id: str, user=Depends(get_current_user)):
-    await db.connect()
-    invoice = await db.invoice.find_unique(where={"id": invoice_id}, include={"estimate": {"include": {"vehicle": True, "items": True}}})
-    customer = await db.customer.find_unique(where={"id": invoice.estimate.vehicle.customerId})
-    await db.disconnect()
-
-    env = Environment(loader=FileSystemLoader("templates"))
-    template = env.get_template("invoice.html")
-    html_out = template.render(
-        shop_name="Fast Auto Repair",
-        invoice=invoice,
-        customer=customer,
-        items=invoice.estimate.items
-    )
-
-    pdf = HTML(string=html_out).write_pdf()
-    return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf", headers={
-        "Content-Disposition": f"inline; filename=invoice_{invoice_id}.pdf"
+    response = await get_invoice(invoice_id, user=user)
+    response.update({
+        "newPayment": {
+            "id": payment.get("id"),
+            "amount": payload.amount,
+            "method": payload.method,
+            "receivedAt": payment.get("receivedAt"),
+        }
     })
+    return response
 
 
-async def send_invoice_email(to: str, subject: str, html: str, pdf_bytes: bytes):
-    msg = EmailMessage()
-    msg['Subject'] = subject
-    msg['From'] = 'noreply@repairshop.local'
-    msg['To'] = to
-    msg.set_content("Your invoice is attached.")
-    msg.add_alternative(html, subtype='html')
-    msg.add_attachment(pdf_bytes, maintype='application', subtype='pdf', filename='invoice.pdf')
+@router.post("/{invoice_id}/pay/online", summary="Initiate a Stripe Checkout session")
+async def create_checkout_session(invoice_id: str, user: Any = Depends(get_current_user)) -> Dict[str, Any]:
+    invoice = await _load_invoice(invoice_id, include_items=False)
+    user_role = _user_attr(user, "role")
+    user_id = _user_attr(user, "id")
+    if invoice.get("customerId") != user_id and user_role not in {"ADMIN", "MANAGER", "ACCOUNTANT"}:
+        raise HTTPException(status_code=403, detail="Unauthorized to pay invoice")
 
-    with smtplib.SMTP("localhost") as s:
-        s.send_message(msg)
-
-@router.post("/invoices/{invoice_id}/email")
-async def email_invoice(invoice_id: str, user=Depends(get_current_user)):
-    ...
-    await send_invoice_email(to=customer.email, subject="Your Invoice", html=html_out, pdf_bytes=pdf)
-    return {"message": "Invoice emailed"}
-
-
-@router.get("/invoices/{invoice_id}/summary")
-async def get_invoice_summary(invoice_id: str, user=Depends(get_current_user)):
-    await db.connect()
-    invoice = await db.invoice.find_unique(
-        where={"id": invoice_id},
-        include={"estimate": {"include": {"items": True}}}
+    amount_cents = int(round((_invoice_total(invoice) + _coerce_number(invoice.get("lateFee"))) * 100))
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        line_items=[
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": f"Invoice {invoice.get('number') or invoice_id}"},
+                    "unit_amount": amount_cents,
+                },
+                "quantity": 1,
+            }
+        ],
+        mode="payment",
+        success_url="https://app.local/portal/invoices/success",
+        cancel_url="https://app.local/portal/invoices/cancel",
+        metadata={"invoice_id": invoice_id},
     )
-    payments = await db.payment.find_many(where={"invoiceId": invoice_id})
-    await db.disconnect()
+    return {"checkout_url": session.get("url")}
 
-    paid = sum(p.amount for p in payments)
-    due = round(invoice.total - paid, 2)
 
+@router.post("/{invoice_id}/finalize", response_model=FinalizeResponse, summary="Finalize an invoice")
+async def finalize_invoice(invoice_id: str, user: Any = Depends(get_current_user)) -> FinalizeResponse:
+    require_role(["MANAGER", "ADMIN"])(user)
+    finalized_at = datetime.now(timezone.utc)
+    await db.connect()
+    try:
+        invoice = await db.invoice.find_unique(where={"id": invoice_id})
+        if not invoice:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+        await db.invoice.update(
+            where={"id": invoice_id},
+            data={"status": "FINALIZED", "finalizedAt": finalized_at},
+        )
+    finally:
+        await db.disconnect()
+    return FinalizeResponse(message="Invoice finalized", status="FINALIZED", finalized_at=finalized_at)
+
+
+@router.get("/{invoice_id}/margin", summary="Calculate invoice gross margin")
+async def get_invoice_margin(invoice_id: str, user: Any = Depends(get_current_user)) -> Dict[str, Any]:
+    require_role(["MANAGER", "ADMIN"])(user)
+    invoice = await _load_invoice(invoice_id, include_items=True)
+    items = invoice.get("items") or []
+    margin_values = _margin_from_items(items)
     return {
         "invoiceId": invoice_id,
-        "total": invoice.total,
-        "paid": paid,
-        "due": due,
-        "status": (
-            "PAID" if due == 0 else "PARTIALLY_PAID" if paid > 0 else "UNPAID"
-        ),
-        "payments": payments
+        "total_cost": margin_values["cost"],
+        "total_price": margin_values["price"],
+        "gross_margin_percent": margin_values["margin"],
+        "threshold": settings.thresholds.invoice_margin_alert_percent,
+        "is_below_threshold": margin_values["margin"] < settings.thresholds.invoice_margin_alert_percent,
     }
 
-@router.post("/invoices/email-unpaid")
-async def email_unpaid(user=Depends(get_current_user)):
-    require_role(["ACCOUNTANT", "MANAGER"])(user)
 
+@router.get("/analytics/margin", summary="Aggregate margin analytics for finalized invoices")
+async def get_margin_analytics(user: Any = Depends(get_current_user)) -> Dict[str, Any]:
+    require_role(["MANAGER", "ADMIN"])(user)
     await db.connect()
-    unpaid = await db.invoice.find_many(where={"status": "UNPAID"}, include={"customer": True})
-
-    for inv in unpaid:
-        link = f"https://repairshop.app/pay/{inv.id}"
-        send_email(
-            inv.customer.email,
-            "Unpaid Invoice",
-            f"Dear {inv.customer.email},\n\nYou have an unpaid invoice #{inv.id}. Pay now: {link}"
+    try:
+        invoices: Sequence[Dict[str, Any]] = await db.invoice.find_many(
+            where={"status": "FINALIZED"},
+            include={"items": True, "customer": True},
+            order_by={"finalizedAt": "desc"},
         )
+    finally:
+        await db.disconnect()
 
-    await db.disconnect()
-    return {"message": f"Emailed {len(unpaid)} unpaid invoices"}
+    series: List[Dict[str, Any]] = []
+    total_margin_percent = 0.0
+    below_threshold = 0
+
+    for invoice in invoices:
+        invoice_dict = dict(invoice)
+        margin_values = _margin_from_items(invoice_dict.get("items") or [])
+        margin_percent = margin_values["margin"]
+        series.append(
+            {
+                "invoiceId": invoice_dict.get("id"),
+                "number": invoice_dict.get("number") or invoice_dict.get("id"),
+                "customer": _extract_customer_name(invoice_dict.get("customer")),
+                "finalizedAt": invoice_dict.get("finalizedAt"),
+                "grossMarginPercent": margin_percent,
+                "isBelowThreshold": margin_percent < settings.thresholds.invoice_margin_alert_percent,
+            }
+        )
+        total_margin_percent += margin_percent
+        if margin_percent < settings.thresholds.invoice_margin_alert_percent:
+            below_threshold += 1
+
+    average_margin = round(total_margin_percent / len(invoices), 2) if invoices else 0.0
+
+    return {
+        "averageMarginPercent": average_margin,
+        "lowMarginInvoices": below_threshold,
+        "threshold": settings.thresholds.invoice_margin_alert_percent,
+        "series": series,
+    }
+
+
+@router.get("/{invoice_id}/pdf", summary="Download invoice PDF placeholder")
+async def download_invoice_pdf(invoice_id: str, user: Any = Depends(get_current_user)) -> StreamingResponse:
+    invoice = await _load_invoice(invoice_id, include_items=False)
+    privileged_roles = {"ADMIN", "MANAGER", "ACCOUNTANT"}
+    user_role = _user_attr(user, "role")
+    user_id = _user_attr(user, "id")
+    if invoice.get("customerId") != user_id and user_role not in privileged_roles:
+        raise HTTPException(status_code=403, detail="Unauthorized to download invoice")
+
+    content = f"Invoice {invoice.get('number') or invoice_id} — Total ${_invoice_total(invoice):.2f}".encode()
+    buffer = io.BytesIO()
+    buffer.write(b"%PDF-1.4\n1 0 obj<</Length 44>>stream\nBT /F1 12 Tf 50 750 Td (")
+    buffer.write(content.replace(b"(", b"[").replace(b")", b"]"))
+    buffer.write(b") Tj ET\nendstream endobj\ntrailer<</Root 1 0 R>>\n%%EOF")
+    buffer.seek(0)
+    headers = {"Content-Disposition": f"attachment; filename=invoice-{invoice_id}.pdf"}
+    return StreamingResponse(buffer, media_type="application/pdf", headers=headers)

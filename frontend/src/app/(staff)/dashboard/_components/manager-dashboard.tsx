@@ -6,6 +6,7 @@ import { LowStockPartsTable } from "@/components/dashboard/low-stock-parts-table
 import { OverdueInvoicesTable } from "@/components/dashboard/overdue-invoices-table";
 import { SummaryFilters, type TechnicianOption } from "@/components/dashboard/summary-filters";
 import { SummaryGrid } from "@/components/dashboard/summary-grid";
+import { InvoiceMarginInsights } from "@/components/dashboard/invoice-margin-insights";
 import {
   useAdminSummary,
   useLowStockParts,
@@ -13,6 +14,7 @@ import {
   useSummaryCsv,
   useTechnicianOptions,
 } from "@/hooks/use-dashboard-data";
+import { useInvoiceMarginAnalytics } from "@/hooks/use-invoices";
 import type { AdminSummaryFilters } from "@/services/dashboard";
 
 function downloadCsv(content: string, fileName: string) {
@@ -31,6 +33,7 @@ export function ManagerDashboardView() {
   const { data: technicians } = useTechnicianOptions();
   const { data: overdueInvoices } = useOverdueInvoices();
   const { data: lowStockParts } = useLowStockParts();
+  const { data: invoiceMargins, isLoading: isMarginsLoading } = useInvoiceMarginAnalytics();
   const csv = useSummaryCsv(metrics ?? [], filters);
 
   const technicianOptions: TechnicianOption[] = useMemo(
@@ -68,6 +71,15 @@ export function ManagerDashboardView() {
       ) : (
         <SummaryGrid metrics={metrics} />
       )}
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">Invoice margin analytics</h2>
+          <p className="text-xs text-muted-foreground">
+            Track profitability signals and focus coaching on low margin jobs.
+          </p>
+        </div>
+        <InvoiceMarginInsights analytics={invoiceMargins} isLoading={isMarginsLoading} />
+      </section>
       <div className="grid gap-6 lg:grid-cols-2">
         <OverdueInvoicesTable invoices={overdueInvoices ?? []} />
         <LowStockPartsTable parts={lowStockParts ?? []} />

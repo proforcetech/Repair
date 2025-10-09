@@ -11,6 +11,7 @@ const navigation = [
   { label: "Dashboard", href: "/portal/dashboard" },
   { label: "Profile", href: "/portal/profile" },
   { label: "Warranty", href: "/portal/warranty" },
+  { label: "Invoices", href: "/portal/invoices" },
 ];
 
 type PortalShellProps = {
