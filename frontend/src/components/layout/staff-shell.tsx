@@ -15,18 +15,21 @@ const navigationByRole: Record<string, Array<{ label: string; href: string }>> =
     { label: "My Dashboard", href: "/dashboard" },
     { label: "Manager View", href: "/dashboard/manager" },
     { label: "Invoices", href: "/invoices" },
+    { label: "Inventory", href: "/inventory" },
   ],
   MANAGER: [
     { label: "Manager Dashboard", href: "/dashboard/manager" },
     { label: "Technician View", href: "/dashboard" },
     { label: "Admin Summary", href: "/dashboard/admin" },
     { label: "Invoices", href: "/invoices" },
+    { label: "Inventory", href: "/inventory" },
   ],
   ADMIN: [
     { label: "Admin Dashboard", href: "/dashboard/admin" },
     { label: "Manager Dashboard", href: "/dashboard/manager" },
     { label: "Technician Dashboard", href: "/dashboard" },
     { label: "Invoices", href: "/invoices" },
+    { label: "Inventory", href: "/inventory" },
   ],
 };
 

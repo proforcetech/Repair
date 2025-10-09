@@ -7,6 +7,7 @@ import { OverdueInvoicesTable } from "@/components/dashboard/overdue-invoices-ta
 import { SummaryFilters, type TechnicianOption } from "@/components/dashboard/summary-filters";
 import { SummaryGrid } from "@/components/dashboard/summary-grid";
 import { InvoiceMarginInsights } from "@/components/dashboard/invoice-margin-insights";
+import { RestockRecommendationsCard } from "@/components/inventory/restock-recommendations-card";
 import {
   useAdminSummary,
   useLowStockParts,
@@ -14,6 +15,7 @@ import {
   useSummaryCsv,
   useTechnicianOptions,
 } from "@/hooks/use-dashboard-data";
+import { useRestockRecommendations } from "@/hooks/use-inventory";
 import { useInvoiceMarginAnalytics } from "@/hooks/use-invoices";
 import type { AdminSummaryFilters } from "@/services/dashboard";
 
@@ -33,6 +35,7 @@ export function ManagerDashboardView() {
   const { data: technicians } = useTechnicianOptions();
   const { data: overdueInvoices } = useOverdueInvoices();
   const { data: lowStockParts } = useLowStockParts();
+  const { data: restockRecommendations, isLoading: isRestockLoading } = useRestockRecommendations();
   const { data: invoiceMargins, isLoading: isMarginsLoading } = useInvoiceMarginAnalytics();
   const csv = useSummaryCsv(metrics ?? [], filters);
 
@@ -83,6 +86,9 @@ export function ManagerDashboardView() {
       <div className="grid gap-6 lg:grid-cols-2">
         <OverdueInvoicesTable invoices={overdueInvoices ?? []} />
         <LowStockPartsTable parts={lowStockParts ?? []} />
+        <div className="lg:col-span-2">
+          <RestockRecommendationsCard items={restockRecommendations} isLoading={isRestockLoading} />
+        </div>
       </div>
     </div>
   );
