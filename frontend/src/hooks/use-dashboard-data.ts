@@ -16,6 +16,7 @@ import {
   fetchTechnicians,
 } from "@/services/dashboard";
 import type { AdminSummaryFilters } from "@/services/dashboard";
+import { fetchRestockSuggestions } from "@/services/inventory";
 import {
   buildSummaryCsv,
   mapAdminSummary,
@@ -103,11 +104,13 @@ export function useDashboardNotifications(role: string | null) {
         return mapTechnicianPartsSummary(summary);
       }
 
-      const [subs, bays, overlap, overdue] = await Promise.allSettled([
+      const [subs, bays, overlap, overdue, restock, lowStock] = await Promise.allSettled([
         fetchHighSubstitutionAlerts(),
         fetchBayOverloadAlerts(),
         fetchTechnicianOverlapAlerts(),
         fetchOverdueInvoiceCount(),
+        fetchRestockSuggestions(),
+        fetchLowStockCandidates(),
       ]);
 
       const notifications: DashboardNotification[] = [];
@@ -150,6 +153,33 @@ export function useDashboardNotifications(role: string | null) {
           description: `${overdue.value.overdue_invoices} receivables require follow-up`,
           severity: "info",
         });
+      }
+
+      if (restock.status === "fulfilled") {
+        const recommendationCount = restock.value.items?.length ?? 0;
+        if (recommendationCount > 0) {
+          notifications.push({
+            id: "restock-recommendations",
+            title: "Restock needed",
+            description: `${recommendationCount} vendor bundles ready to order`,
+            severity: "warning",
+          });
+        }
+      }
+
+      if (lowStock.status === "fulfilled") {
+        const lowStockCount = (lowStock.value ?? []).filter((part) => {
+          const reorderMin = Number(part.reorderMin ?? 0);
+          return reorderMin > 0 && part.quantity < reorderMin;
+        }).length;
+        if (lowStockCount > 0) {
+          notifications.push({
+            id: "low-stock-alert",
+            title: "Low stock parts",
+            description: `${lowStockCount} SKUs below minimum`,
+            severity: "warning",
+          });
+        }
       }
 
       return notifications;
