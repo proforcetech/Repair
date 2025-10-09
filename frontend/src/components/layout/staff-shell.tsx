@@ -14,16 +14,19 @@ const navigationByRole: Record<string, Array<{ label: string; href: string }>> =
   TECHNICIAN: [
     { label: "My Dashboard", href: "/dashboard" },
     { label: "Manager View", href: "/dashboard/manager" },
+    { label: "Invoices", href: "/invoices" },
   ],
   MANAGER: [
     { label: "Manager Dashboard", href: "/dashboard/manager" },
     { label: "Technician View", href: "/dashboard" },
     { label: "Admin Summary", href: "/dashboard/admin" },
+    { label: "Invoices", href: "/invoices" },
   ],
   ADMIN: [
     { label: "Admin Dashboard", href: "/dashboard/admin" },
     { label: "Manager Dashboard", href: "/dashboard/manager" },
     { label: "Technician Dashboard", href: "/dashboard" },
+    { label: "Invoices", href: "/invoices" },
   ],
 };
 
@@ -61,7 +64,11 @@ export function StaffShell({ children }: StaffShellProps) {
     });
   }, [pathname]);
 
-  const navigation = navigationByRole[role ?? ""] ?? [{ label: "Dashboard", href: "/dashboard" }];
+  const navigation =
+    navigationByRole[role ?? ""] ?? [
+      { label: "Dashboard", href: "/dashboard" },
+      { label: "Invoices", href: "/invoices" },
+    ];
   const { data: notifications } = useDashboardNotifications(role ?? null);
 
   if (!isAuthenticated && !isLoading) {
