@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 
 import { getWarrantyHistory } from "@/services/customers";
@@ -27,6 +28,12 @@ export default function WarrantyHistoryPage() {
         <p className="text-sm text-muted-foreground">
           Review your submitted warranty claims and track their progress with our service team.
         </p>
+        <Link
+          href="/portal/warranty/submit"
+          className="inline-flex items-center rounded-md border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition hover:bg-primary/20"
+        >
+          Submit a new claim
+        </Link>
       </header>
 
       {claims.length ? (
