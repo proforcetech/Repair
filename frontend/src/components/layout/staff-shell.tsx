@@ -6,6 +6,7 @@ import { ReactNode, useMemo, useState } from "react";
 import { clsx } from "clsx";
 
 import { useDashboardNotifications } from "@/hooks/use-dashboard-data";
+import { useWarrantyCommentNotifications } from "@/hooks/use-warranty-notifications";
 import { useSession } from "@/hooks/use-session";
 import { useLayoutStore } from "@/stores/layout-store";
 import type { DashboardNotification } from "@/services/dashboard-mappers";
@@ -16,6 +17,7 @@ const navigationByRole: Record<string, Array<{ label: string; href: string }>> =
     { label: "Manager View", href: "/dashboard/manager" },
     { label: "Invoices", href: "/invoices" },
     { label: "Inventory", href: "/inventory" },
+    { label: "Warranty", href: "/warranty" },
   ],
   MANAGER: [
     { label: "Manager Dashboard", href: "/dashboard/manager" },
@@ -23,6 +25,7 @@ const navigationByRole: Record<string, Array<{ label: string; href: string }>> =
     { label: "Admin Summary", href: "/dashboard/admin" },
     { label: "Invoices", href: "/invoices" },
     { label: "Inventory", href: "/inventory" },
+    { label: "Warranty", href: "/warranty" },
   ],
   ADMIN: [
     { label: "Admin Dashboard", href: "/dashboard/admin" },
@@ -30,6 +33,7 @@ const navigationByRole: Record<string, Array<{ label: string; href: string }>> =
     { label: "Technician Dashboard", href: "/dashboard" },
     { label: "Invoices", href: "/invoices" },
     { label: "Inventory", href: "/inventory" },
+    { label: "Warranty", href: "/warranty" },
   ],
 };
 
@@ -73,6 +77,9 @@ export function StaffShell({ children }: StaffShellProps) {
       { label: "Invoices", href: "/invoices" },
     ];
   const { data: notifications } = useDashboardNotifications(role ?? null);
+  const warrantyEnabled = role ? ["ADMIN", "MANAGER", "FRONT_DESK"].includes(role) : false;
+  const warrantyNotificationsQuery = useWarrantyCommentNotifications(warrantyEnabled);
+  const combinedNotifications = [...(notifications ?? []), ...(warrantyNotificationsQuery.data ?? [])];
 
   if (!isAuthenticated && !isLoading) {
     router.replace("/login");
@@ -111,7 +118,7 @@ export function StaffShell({ children }: StaffShellProps) {
           </div>
           <div className="flex items-center gap-4">
             <Breadcrumbs items={breadcrumbs} />
-            <NotificationCenter notifications={notifications ?? []} />
+            <NotificationCenter notifications={combinedNotifications} />
             {isAuthenticated && (
               <div className="hidden flex-col text-xs leading-tight sm:flex">
                 <span className="font-semibold text-foreground">{user?.email}</span>
