@@ -104,6 +104,10 @@ export async function generatePurchaseOrders() {
   return post<PurchaseOrderGenerationResponse>("/inventory/purchase-orders/create");
 }
 
+export async function fetchPurchaseOrders() {
+  return get<PurchaseOrderRecord[]>("/inventory/purchase-orders");
+}
+
 export async function fetchInventorySummary() {
   return get<InventorySummary>("/inventory/summary");
 }

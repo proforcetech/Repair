@@ -12,6 +12,7 @@ import {
   consumePart as consumePartRequest,
   fetchInventoryParts,
   fetchInventorySummary,
+  fetchPurchaseOrders,
   fetchRestockSuggestions,
   generatePurchaseOrders,
   transferStock as transferStockRequest,
@@ -118,9 +119,9 @@ export function useInventorySummary() {
 export function useGeneratedPurchaseOrders() {
   return useQuery<PurchaseOrderRecord[]>({
     queryKey: inventoryKeys.purchaseOrders(),
-    queryFn: async () => [],
+    queryFn: fetchPurchaseOrders,
     initialData: [],
-    staleTime: Infinity,
+    staleTime: 2 * 60_000,
   });
 }
 
@@ -202,8 +203,23 @@ export function useGeneratePurchaseOrders() {
       const created = response.created ?? [];
       queryClient.setQueryData<PurchaseOrderRecord[]>(
         inventoryKeys.purchaseOrders(),
-        created,
+        (existing) => {
+          const previous = existing ?? [];
+          if (created.length === 0) {
+            return previous;
+          }
+
+          const next: PurchaseOrderRecord[] = [...created];
+          const seen = new Set(created.map((po) => po.id));
+          for (const record of previous) {
+            if (!seen.has(record.id)) {
+              next.push(record);
+            }
+          }
+          return next;
+        },
       );
+      queryClient.invalidateQueries({ queryKey: inventoryKeys.purchaseOrders() });
       queryClient.invalidateQueries({ queryKey: inventoryKeys.summary() });
       showToast({
         title: "Purchase orders generated",
